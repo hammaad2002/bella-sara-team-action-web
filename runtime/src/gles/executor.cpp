@@ -418,6 +418,14 @@ static void present() {
   glBlitFramebuffer(0, 0, (GLint)g.bbw, (GLint)g.bbh, dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_LINEAR);
   plat::gl_swap();
   g.state_dirty = true;
+#if !defined(__EMSCRIPTEN__)
+  static uint64_t max_frames = []() -> uint64_t {
+    if (const char* e = getenv("BELLA_FRAMES")) return strtoull(e, nullptr, 10);
+    if (const char* e = getenv("BELLA_MAX_FRAMES")) return strtoull(e, nullptr, 10);
+    return 0;
+  }();
+  if (max_frames && g.frames >= max_frames) rt::process_exit(0);
+#endif
 }
 
 static void blit(const Target& src, const uint32_t* sr, const Target& dst, const uint32_t* dr, uint32_t filter) {
