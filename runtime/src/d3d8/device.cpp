@@ -19,12 +19,13 @@ using namespace rt;
 namespace d3d8 {
 namespace {
 
-// D3D8 D3DPRESENT_PARAMETERS (48 bytes) — no MultiSampleQuality / PresentationInterval fields (unlike D3D9).
+// D3D8 D3DPRESENT_PARAMETERS (52 bytes, 13 dwords) — no MultiSampleQuality field (unlike D3D9).
 enum : int {
   kPP8_Windowed = 7,
   kPP8_EnableAutoDepthStencil = 8,
   kPP8_AutoDepthStencilFormat = 9,
   kPP8_Flags = 10,
+  kPP8_PresentationInterval = 12,
 };
 
 std::recursive_mutex g_api_lock;
@@ -74,7 +75,7 @@ class Device8 : public ComObject {
   uint32_t guest_ptr = 0;
   uint32_t d3d8_guest = 0;
   uint32_t hwnd = 0, behavior = 0;
-  uint32_t pp[14] = {};
+  uint32_t pp[13] = {};
   d3d::State st;
   Surface8* back_buffer = nullptr;
   ComObject* render_target = nullptr;
@@ -1183,7 +1184,7 @@ uint32_t Reset(Cpu* c, ComObject* self) {
   Device8* d = D(self);
   uint32_t pp = arg(c, 1);
   if (pp >= kNullGuardEnd) {
-    for (int i = 0; i < 14; i++) d->pp[i] = ld32(pp + 4 * (uint32_t)i);
+    for (int i = 0; i < 13; i++) d->pp[i] = ld32(pp + 4 * (uint32_t)i);
     if (!d->pp[0] || !d->pp[1]) {
       int w, h;
       plat::get_window_size(&w, &h);
@@ -1245,7 +1246,7 @@ uint32_t create_d3d8_device(Cpu* c, ComObject*) {
   auto* dev = new Device8();
   dev->hwnd = hwnd;
   dev->behavior = behavior;
-  for (int i = 0; i < 14; i++) dev->pp[i] = ld32(pp + 4 * (uint32_t)i);
+  for (int i = 0; i < 13; i++) dev->pp[i] = ld32(pp + 4 * (uint32_t)i);
   if (!dev->pp[0] || !dev->pp[1]) {
     int w, h;
     plat::get_window_size(&w, &h);
@@ -1266,7 +1267,8 @@ uint32_t create_d3d8_device(Cpu* c, ComObject*) {
       "D3D8 CreateDevice(adapter=%u, type=%u, hwnd=%08x, behavior=%08x): %ux%u, backbuffer fmt=%08x, windowed=%u, "
       "autodepth=%u (%s), interval=%08x",
       adapter, type, hwnd, behavior, dev->pp[0], dev->pp[1], dev->pp[2], dev->pp[kPP8_Windowed],
-      dev->pp[kPP8_EnableAutoDepthStencil], d3d::format_name(dev->pp[kPP8_AutoDepthStencilFormat]), dev->pp[kPP8_Flags]);
+      dev->pp[kPP8_EnableAutoDepthStencil], d3d::format_name(dev->pp[kPP8_AutoDepthStencilFormat]),
+      dev->pp[kPP8_PresentationInterval]);
   if (!(behavior & 0x2)) c->fcw = (c->fcw & ~0x300u);
   dev->d3d8_guest = arg(c, 0);
   recorder_create_device8(dev);
