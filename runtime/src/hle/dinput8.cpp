@@ -47,7 +47,9 @@ constexpr uint32_t DIERR_INVALIDPARAM = 0x80070057, DIERR_NOTACQUIRED = 0x800700
 constexpr uint32_t DI_OK = 0, DIENUM_CONTINUE = 1;
 constexpr uint32_t DIDFT_ABSAXIS = 0x2, DIDFT_AXIS = 0x3, DIDFT_PSHBUTTON = 0x4, DIDFT_BUTTON = 0xc, DIDFT_POV = 0x10,
                    DIDFT_FFACTUATOR = 0x01000000;
-constexpr uint32_t DIPROP_RANGE = 4, DIPROP_DEADZONE = 5, DIPROP_SATURATION = 6, DIPROP_FFGAIN = 7, DIPROP_AUTOCENTER = 9;
+constexpr uint32_t DIPROP_RANGE = 4, DIPROP_DEADZONE = 5, DIPROP_SATURATION = 6, DIPROP_FFGAIN = 7, DIPROP_AXISMODE = 8,
+                   DIPROP_AUTOCENTER = 9, DIPROP_BUFFERSIZE = 10;
+constexpr uint32_t DIMOFS_X = 0, DIMOFS_Y = 4, DIMOFS_Z = 8, DIMOFS_BUTTON0 = 12;
 constexpr uint32_t DIPH_DEVICE = 0, DIPH_BYOFFSET = 1, DIPH_BYID = 2;
 
 // The virtual pad: an Xbox-style controller. The D-pad is the POV hat and also drives the left
@@ -82,6 +84,9 @@ class Device : public ComObject {
   uint32_t coop_hwnd = 0;
   bool acquired = false;
   uint8_t prev_keys[256] = {};
+  uint8_t prev_mouse_buttons[8] = {};
+  uint32_t buffer_size = 0;
+  uint32_t axis_mode = 0;
   uint32_t sequence = 0;
   int32_t range_min[kAxisCount], range_max[kAxisCount];
   uint32_t deadzone[kAxisCount] = {};
@@ -313,6 +318,17 @@ std::vector<int> prop_axes(uint32_t hdr) {
 uint32_t dev_SetProperty(Cpu* c, ComObject* self) {
   auto* d = dev(self);
   uint32_t prop = arg(c, 1), hdr = arg(c, 2);
+  if (d->kind == Kind::Keyboard || d->kind == Kind::Mouse) {
+    if (prop == DIPROP_BUFFERSIZE) {
+      d->buffer_size = ld32(hdr + 16);
+      return DI_OK;
+    }
+    if (prop == DIPROP_AXISMODE && d->kind == Kind::Mouse) {
+      d->axis_mode = ld32(hdr + 16);
+      return DI_OK;
+    }
+    return DI_OK;
+  }
   if (d->kind != Kind::Pad) return DI_OK;
   if (prop != DIPROP_RANGE && prop != DIPROP_DEADZONE && prop != DIPROP_SATURATION) return DI_OK;  // gain, autocenter, ...
   std::vector<int> axes = prop_axes(hdr);
@@ -437,7 +453,8 @@ uint32_t dev_GetDeviceState(Cpu* c, ComObject* self) {
     st32(out + 0, (uint32_t)m.dx);
     st32(out + 4, (uint32_t)m.dy);
     st32(out + 8, (uint32_t)m.wheel);
-    for (uint32_t b = 0; b < 4 && 12 + b < size; b++) st8(out + 12 + b, m.buttons[b]);
+    uint32_t btn_count = size >= 20 ? 8u : 4u;
+    for (uint32_t b = 0; b < btn_count && 12 + b < size; b++) st8(out + 12 + b, m.buttons[b] & 0x80 ? 0x80 : 0);
   } else {
     plat::GamepadState s;
     if (!pad_connected(d, &s)) return DIERR_INPUTLOST;
@@ -447,25 +464,48 @@ uint32_t dev_GetDeviceState(Cpu* c, ComObject* self) {
   return DI_OK;
 }
 
-// Buffered keyboard data: report key transitions since the last call.
+void write_objdata(uint32_t e, uint32_t objsize, uint32_t ofs, uint32_t data, uint32_t& seq) {
+  st32(e + 0, ofs);
+  st32(e + 4, data);
+  st32(e + 8, 0);
+  st32(e + 12, seq++);
+  if (objsize >= 20) st32(e + 16, 0);
+}
+
+// Buffered keyboard/mouse data: report transitions since the last call.
 uint32_t dev_GetDeviceData(Cpu* c, ComObject* self) {
   auto* d = dev(self);
   uint32_t objsize = arg(c, 1), out = arg(c, 2), inout = arg(c, 3), flags = arg(c, 4);
   if (needs_acquire(d) && !d->acquired) return DIERR_NOTACQUIRED;
   uint32_t cap = ld32(inout), n = 0;
-  if (d->kind == Kind::Keyboard) {
+  const bool peek = (flags & 1) != 0;
+  if (d->kind == Kind::Keyboard && d->buffer_size > 0) {
     const uint8_t* keys = plat::keyboard_state();
     for (uint32_t k = 0; k < 256 && n < cap; k++) {
       if ((keys[k] & 0x80) == (d->prev_keys[k] & 0x80)) continue;
-      if (out) {
-        uint32_t e = out + n * objsize;
-        st32(e + 0, k);                 // dwOfs (DIK code)
-        st32(e + 4, keys[k] & 0x80);    // dwData
-        st32(e + 8, 0);                 // dwTimeStamp
-        st32(e + 12, d->sequence++);    // dwSequence
-        if (objsize >= 20) st32(e + 16, 0);
-      }
-      if (!(flags & 1)) d->prev_keys[k] = keys[k];  // DIGDD_PEEK leaves the buffer intact
+      if (out) write_objdata(out + n * objsize, objsize, k, keys[k] & 0x80, d->sequence);
+      if (!peek) d->prev_keys[k] = keys[k];
+      n++;
+    }
+  } else if (d->kind == Kind::Mouse && d->buffer_size > 0) {
+    plat::MouseState m = plat::take_mouse_state();
+    if (m.dx && n < cap) {
+      if (out) write_objdata(out + n * objsize, objsize, DIMOFS_X, (uint32_t)m.dx, d->sequence);
+      n++;
+    }
+    if (m.dy && n < cap) {
+      if (out) write_objdata(out + n * objsize, objsize, DIMOFS_Y, (uint32_t)m.dy, d->sequence);
+      n++;
+    }
+    if (m.wheel && n < cap) {
+      if (out) write_objdata(out + n * objsize, objsize, DIMOFS_Z, (uint32_t)m.wheel, d->sequence);
+      n++;
+    }
+    for (uint32_t b = 0; b < 3 && n < cap; b++) {
+      uint8_t cur = m.buttons[b] & 0x80, prev = d->prev_mouse_buttons[b] & 0x80;
+      if (cur == prev) continue;
+      if (out) write_objdata(out + n * objsize, objsize, DIMOFS_BUTTON0 + b, cur, d->sequence);
+      if (!peek) d->prev_mouse_buttons[b] = m.buttons[b];
       n++;
     }
   }

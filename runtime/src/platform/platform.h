@@ -31,6 +31,18 @@ void poll_events(std::vector<InputEvent>& out);
 const uint8_t* keyboard_state();
 struct MouseState { int32_t dx, dy, wheel; uint8_t buttons[4]; };
 MouseState take_mouse_state();
+#ifdef __EMSCRIPTEN__
+inline void mouse_pos(int* x, int* y) {
+  if (x) *x = 0;
+  if (y) *y = 0;
+}
+inline void set_mouse_pos(int, int) {}
+inline bool mouse_button_down(int) { return false; }
+#else
+void mouse_pos(int* x, int* y);
+void set_mouse_pos(int x, int y);
+bool mouse_button_down(int button);
+#endif
 bool has_window();
 // Gamepads, one per player slot (the page or SDL decides which physical pad feeds which slot).
 // Buttons use the W3C "standard" Gamepad order; sticks are -1..1 with +x right, +y down.

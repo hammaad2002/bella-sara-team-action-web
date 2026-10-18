@@ -20,6 +20,17 @@ namespace d3d {
 void set_app_active(bool active);  // d3d8/state.cpp: device loss on deactivation (device: wave 2)
 }
 
+#ifndef __EMSCRIPTEN__
+namespace plat {
+__attribute__((weak)) void mouse_pos(int* x, int* y) {
+  if (x) *x = 0;
+  if (y) *y = 0;
+}
+__attribute__((weak)) void set_mouse_pos(int, int) {}
+__attribute__((weak)) bool mouse_button_down(int) { return false; }
+}  // namespace plat
+#endif
+
 namespace {
 const char* kDll = "user32.dll";
 
@@ -438,7 +449,33 @@ HLE_STDCALL(kDll, SetFocus, 1) {
 HLE_STDCALL(kDll, UpdateWindow, 1) { return 1; }
 HLE_STDCALL(kDll, IsWindowEnabled, 1) { return 1; }
 HLE_STDCALL(kDll, IsWindowVisible, 1) { return 1; }
-HLE_STDCALL(kDll, SetCursorPos, 2) { return 1; }
+HLE_STDCALL(kDll, SetCursorPos, 2) {
+  plat::set_mouse_pos((int)arg(c, 0), (int)arg(c, 1));
+  return 1;
+}
+
+HLE_STDCALL(kDll, GetCursorPos, 1) {
+  int x = 0, y = 0;
+  plat::mouse_pos(&x, &y);
+  uint32_t p = arg(c, 0);
+  st32(p + 0, (uint32_t)x);
+  st32(p + 4, (uint32_t)y);
+  return 1;
+}
+
+HLE_STDCALL(kDll, ScreenToClient, 3) {
+  uint32_t pt = arg(c, 1);
+  st32(pt + 0, ld32(pt + 0));
+  st32(pt + 4, ld32(pt + 4));
+  return 1;
+}
+
+HLE_STDCALL(kDll, ClientToScreen, 3) {
+  uint32_t pt = arg(c, 1);
+  st32(pt + 0, ld32(pt + 0));
+  st32(pt + 4, ld32(pt + 4));
+  return 1;
+}
 
 HLE_STDCALL(kDll, GetClientRect, 2) {
   uint32_t r = arg(c, 1);
@@ -597,12 +634,15 @@ HLE_STDCALL(kDll, EndPaint, 2) { return 1; }
 
 HLE_STDCALL(kDll, GetKeyboardLayout, 1) { return 0x04090409; }  // US English
 
-// Async key state: translate the virtual key to its scan code and read the shared keyboard state.
-HLE_STDCALL(kDll, GetAsyncKeyState, 1) {
-  uint32_t vk = arg(c, 0), sc = map_virtual_key(vk, 0);
-  if (sc && sc < 256 && (plat::keyboard_state()[sc] & 0x80)) return 0x8000;
-  return 0;
+static bool key_or_mouse_down(uint32_t vk) {
+  if (vk == 1 || vk == 2 || vk == 4) return plat::mouse_button_down(vk == 1 ? 0 : vk == 2 ? 1 : 2);
+  uint32_t sc = map_virtual_key(vk, 0);
+  return sc && sc < 256 && (plat::keyboard_state()[sc] & 0x80);
 }
+
+HLE_STDCALL(kDll, GetAsyncKeyState, 1) { return key_or_mouse_down(arg(c, 0)) ? 0x8000u : 0; }
+
+HLE_STDCALL(kDll, GetKeyState, 1) { return key_or_mouse_down(arg(c, 0)) ? (int32_t)0x8000 : 0; }
 
 // gdi32, shell32 and winmm.
 HLE_STDCALL("gdi32.dll", DeleteObject, 1) { return 1; }
