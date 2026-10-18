@@ -310,6 +310,33 @@ void bind_render_target() {
   glBindFramebuffer(GL_FRAMEBUFFER, fbo_for(g.rt[0], g.ds));
 }
 
+static GLuint white_tex() {
+  static GLuint tex = 0;
+  if (!tex) {
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    uint8_t px[4] = {255, 255, 255, 255};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+  }
+  return tex;
+}
+
+void bind_texture_units(uint8_t nstages, const uint8_t tex_kind[8]) {
+  for (int i = 0; i < nstages; i++) {
+    if (!tex_kind[i]) continue;
+    uint32_t tid = g.textures[i];
+    auto it = tid ? g.tex.find(tid) : g.tex.end();
+    glActiveTexture(GL_TEXTURE0 + (GLenum)i);
+    if (tid == 0 || it == g.tex.end() || (g.rt[0].kind == 2 && tid != 0 && tid == g.rt[0].id)) {
+      glBindTexture(GL_TEXTURE_2D, white_tex());
+      glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+      continue;
+    }
+    glBindTexture(it->second.target, it->second.gl);
+    glBindSampler((GLuint)i, sampler_for_texture_stage((uint32_t)i, it->second.levels > 1));
+  }
+}
+
 // ---- Clears, blits, presentation ---------------------------------------------------------------
 
 static void clear(uint32_t flags, uint32_t color, float z, uint32_t stencil, const std::vector<int32_t>& rects) {
