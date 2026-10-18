@@ -30,8 +30,9 @@ export const IO_OUT_MM = IO + 0x280; // 8 x 8 bytes, mm0-7 after the instruction
 
 const [exePath, hintsPath, outDir] = process.argv.slice(2);
 const pe = new PeImage(new Uint8Array(readFileSync(exePath)));
-const prog = new Program(pe, await loadGhidraHints(hintsPath));
-prog.discover();
+const hints = hintsPath && hintsPath !== "-" ? await loadGhidraHints(hintsPath) : {};
+const prog = new Program(pe, hints);
+prog.discover({ speculate: true });
 
 const X87_PREFIX = 0xd8; // escape opcodes d8..df
 function isX87(i: Insn): boolean {

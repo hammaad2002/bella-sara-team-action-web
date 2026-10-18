@@ -318,8 +318,17 @@ export class Program {
      let masked = false;
      for (let k = history.length - 2; k >= 0 && k >= history.length - 32; k--) {
        const h = history[k];
-       // movzx idxReg, byte ptr [r + idxtable]
-       if (indexTable === null && h.mnemonic === Mnemonic.Movzx && h.ops[0]?.kind === "reg" && sameReg(h.ops[0].reg, idxReg) && h.mem && h.mem.size === 1 && h.mem.index === Register.None && h.mem.base !== Register.None) {
+       // movzx idxReg, byte ptr [r + idxtable]  OR  xor idxReg, idxReg; mov reg8, byte ptr [r + idxtable]
+       if (
+         indexTable === null &&
+         (h.mnemonic === Mnemonic.Movzx || h.mnemonic === Mnemonic.Mov) &&
+         h.ops[0]?.kind === "reg" &&
+         sameReg(h.ops[0].reg, idxReg) &&
+         h.mem &&
+         h.mem.size === 1 &&
+         h.mem.index === Register.None &&
+         h.mem.base !== Register.None
+       ) {
          indexTable = h.mem.disp;
          idxReg = h.mem.base;
          continue;
@@ -333,6 +342,16 @@ export class Program {
          count = h.ops[1].value + 1;
          masked = true;
          break;
+       }
+       if (
+         indexTable === null &&
+         h.mnemonic === Mnemonic.Xor &&
+         h.ops[0]?.kind === "reg" &&
+         h.ops[1]?.kind === "reg" &&
+         sameReg(h.ops[0].reg, idxReg) &&
+         sameReg(h.ops[1].reg, idxReg)
+       ) {
+         continue;
        }
        // Any other write to the index register before a bound was found: give up on this chain.
        if (h.ops[0]?.kind === "reg" && sameReg(h.ops[0].reg, idxReg) && h.mnemonic !== Mnemonic.Cmp && h.mnemonic !== Mnemonic.Test) break;
