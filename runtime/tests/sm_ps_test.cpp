@@ -15,6 +15,7 @@ using gles::PsInfo;
 namespace {
 
 // ---- Token builders -----------------------------------------------------------------------------
+constexpr uint32_t ps10 = 0xffff0100;
 constexpr uint32_t ps11 = 0xffff0101;
 constexpr uint32_t psEnd = 0x0000ffff;
 constexpr uint32_t kRtemp = 0, kRinput = 1, kRconst = 2, kRtex = 3, kRcolorout = 8, kRdepthout = 9;
@@ -30,6 +31,9 @@ constexpr uint32_t kSat = 1;    // destination _sat
 constexpr uint32_t kNeg = 1;    // source -b
 constexpr uint32_t kBx2 = 4;    // source _bx2 (D3DSPSM_SIGN)
 constexpr uint32_t kComp = 6;   // source _comp
+constexpr uint32_t kD2 = 9;     // source _d2
+constexpr uint32_t kX4 = 10;    // source _x4
+constexpr uint32_t kCoissue = 0x40000000u;
 constexpr uint32_t swAll = 0xe4;  // .xyzw
 constexpr uint32_t swAa = 0xff;   // replicate a
 
@@ -111,6 +115,24 @@ std::vector<uint32_t> arithmetic_ops() {
 std::vector<uint32_t> def_literal() {  // def c0 = ...; mov oC0, c0
   uint32_t fd[] = {0x3f800000, 0x40000000, 0x40400000, 0x40800000};  // 1 2 3 4
   return {ps11, OP_DEF, dst(kRconst, 0, 0), fd[0], fd[1], fd[2], fd[3], OP_MOV, dst(kRcolorout, 0), src(kRconst, 0), psEnd};
+}
+
+// Inline ps_1_0 token streams from BellaSara.exe (.data, file offset 0x336368 / 0x3363b8 / 0x3363f8).
+std::vector<uint32_t> exe_ps10_stream_a() {
+  return {ps10, 0x42, 0xb00f0000, 0x42, 0xb00f0001, 0x5, 0x800f0000, 0xb0e40000, 0x90e40000, 0x5, 0x800f0001,
+          0xb0e40001, 0xb0ff0001, 0x4, 0x80070000, 0x80e40001, 0xa0e40000, 0x80e40000, psEnd};
+}
+
+std::vector<uint32_t> exe_ps10_stream_b() {
+  return {ps10, 0x42, 0xb00f0000, 0x5, 0x800f0000, 0xb0e40000, 0xb0ff0000, 0x4, 0x80070000, 0x80e40000, 0xa0e40000,
+          0x90e40000, kCoissue | OP_MOV, 0x80080000, 0x90ff0000, psEnd};
+}
+
+std::vector<uint32_t> exe_ps10_stream_c() {
+  return {ps10, 0x42, 0xb00f0000, 0x42, 0xb00f0001, 0x42, 0xb00f0002, 0x5, 0x800f0000, 0xb0e40000, 0xb6ff0000, 0x5,
+          0x800f0000, 0x80e40000, 0x90e40000, 0x5, 0x800f0001, 0xb0e40001, 0xb0ff0001, 0x4, 0x800f0000, 0x80e40001,
+          0x90e40000, 0x80e40000, 0x5, 0x800f0001, 0xb0e40002, 0xb0ff0002, 0x4, 0x800f0000, 0x80e40001, 0xa0e40000,
+          0x80e40000, psEnd};
 }
 
 }  // namespace
@@ -207,7 +229,7 @@ int main() {
     expect_fail("bad: oDepth write", {ps11, OP_MOV, dst(kRdepthout, 0), src(kRtemp, 0), psEnd}, "oDepth");
     expect_fail("bad: oC1 write", {ps11, OP_MOV, dst(kRcolorout, 1), src(kRtemp, 0), psEnd}, "oC0");
     expect_fail("bad: relative source", {ps11, OP_MOV, dst(kRtemp, 0), src(kRtemp, 0) | 0x2000, psEnd}, "relative addressing");
-    expect_fail("bad: unsupported source modifier", {ps11, OP_MOV, dst(kRtemp, 0), src(kRtemp, 0, swAll, 10), psEnd},
+    expect_fail("bad: unsupported source modifier", {ps11, OP_MOV, dst(kRtemp, 0), src(kRtemp, 0, swAll, 11), psEnd},
                 "source modifier");
     expect_fail("bad: constant out of range", {ps11, OP_MOV, dst(kRcolorout, 0), src(kRconst, 8), psEnd}, "exceeds ps_1_1");
     expect_fail("bad: texm3x2tex without pad", {ps11, OP_TEXM3x2TEX, dst(kRtex, 2, 0), src(kRtex, 0), psEnd},
@@ -220,6 +242,42 @@ int main() {
     std::string err;
     std::string g = sm_pixel_glsl({ps11, OP_TEXKILL, dst(kRtex, 0, 0), OP_MOV, dst(kRcolorout, 0), src(kRtex, 0), psEnd}, &info, &err);
     check(!g.empty() && info.ok && contains(g, "discard"), "texkill: discards");
+  }
+
+  // 8. ps_1_0 (0xffff0100): shipped .data streams and co-issue.
+  {
+    PsInfo info{};
+    std::string err;
+    std::string g = sm_pixel_glsl(exe_ps10_stream_a(), &info, &err);
+    check(!g.empty() && info.ok, "exe ps10 stream a: translated ok");
+    check(contains(g, "texture(s0, v_t[0].xy)") && contains(g, "texture(s1, v_t[1].xy)"), "exe ps10 stream a: tex t0/t1");
+    check(contains(g, "t0 * v0") && contains(g, "t1 * t1.wwww") && contains(g, "r1 * pc[0] + r0"), "exe ps10 stream a: mul/mad chain");
+  }
+  {
+    PsInfo info{};
+    std::string err;
+    std::string g = sm_pixel_glsl(exe_ps10_stream_b(), &info, &err);
+    check(!g.empty() && info.ok, "exe ps10 stream b: translated ok");
+    check(contains(g, "r0 * pc[0] + v0"), "exe ps10 stream b: mad rgb");
+    check(contains(g, "r0.w = (clamp(v0.wwww, -1.0, 1.0)).w;"), "exe ps10 stream b: co-issued mov r0.a, v0.a");
+  }
+  {
+    PsInfo info{};
+    std::string err;
+    std::string g = sm_pixel_glsl(exe_ps10_stream_c(), &info, &err);
+    check(!g.empty() && info.ok, "exe ps10 stream c: translated ok");
+    check(contains(g, "texture(s0, v_t[0].xy)") && contains(g, "texture(s1, v_t[1].xy)") && contains(g, "texture(s2, v_t[2].xy)"),
+          "exe ps10 stream c: three tex stages");
+    check(contains(g, "t0.wwww") && contains(g, "t1.wwww") && contains(g, "t2.wwww"), "exe ps10 stream c: alpha replicates");
+  }
+
+  // 9. _d2 / _x4 source modifiers.
+  {
+    PsInfo info{};
+    std::string err;
+    std::string g = sm_pixel_glsl({ps10, OP_MUL, dst(kRtemp, 0), src(kRconst, 0, swAll, kD2), src(kRconst, 1, swAll, kX4), psEnd}, &info,
+                                    &err);
+    check(!g.empty() && info.ok && contains(g, "pc[0] * 0.5") && contains(g, "pc[1] * 4.0"), "ps10: _d2 and _x4 modifiers");
   }
 
   printf(fails ? "sm_ps_test: %d FAILURES\n" : "sm_ps_test: all passed\n", fails);

@@ -200,17 +200,31 @@ static void create_texture(uint32_t id, uint32_t kind, uint32_t w, uint32_t h, u
   g.tex[id] = t;
 }
 
+static void log_texture_upload(uint32_t id, uint32_t level, uint32_t w, uint32_t h, uint32_t fmt, uint32_t nbytes, const uint8_t* data) {
+  if (!rt::trace_enabled("uploads") && !rt::trace_enabled("debug")) return;
+  char hex[3 * 8 + 1] = {};
+  for (int k = 0; k < 8 && k < (int)nbytes; k++) snprintf(hex + 3 * k, 4, "%02x ", data[k]);
+  rt::log(rt::Log::Info, "upload tex %u level %u %ux%u fmt %08x bytes %u: %s", id, level, w, h, fmt, nbytes, hex);
+}
+
 static void upload_texture(uint32_t id, uint32_t face, uint32_t level, uint32_t w, uint32_t h, uint32_t fmt, uint32_t pitch, uint32_t rows,
                            const uint8_t* data) {
   auto it = g.tex.find(id);
   if (it == g.tex.end()) return;
   Tex& t = it->second;
+  if (level >= t.levels || w == 0 || h == 0) {
+    if (rt::trace_enabled("uploads") || rt::trace_enabled("debug"))
+      rt::log(rt::Log::Warn, "upload tex %u skip level %u/%u %ux%u (invalid mip)", id, level, t.levels, w, h);
+    return;
+  }
   GLenum target = t.target == GL_TEXTURE_CUBE_MAP ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + face : GL_TEXTURE_2D;
   glBindTexture(t.target, t.gl);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
   const GlFormat& f = t.gfmt;
+  uint32_t nbytes = pitch * rows;
   if (f.compressed) {
-    glCompressedTexSubImage2D(target, (GLint)level, 0, 0, (GLsizei)w, (GLsizei)h, f.internal, (GLsizei)(pitch * rows), data);
+    log_texture_upload(id, level, w, h, fmt, nbytes, data);
+    glCompressedTexSubImage2D(target, (GLint)level, 0, 0, (GLsizei)w, (GLsizei)h, f.internal, (GLsizei)nbytes, data);
   } else if (f.expand) {
     auto rgba = to_rgba8(fmt, data, w, h, pitch);
     if (rt::trace_enabled("uploads") || rt::trace_enabled("debug")) {
@@ -222,10 +236,10 @@ static void upload_texture(uint32_t id, uint32_t face, uint32_t level, uint32_t 
     }
     glTexSubImage2D(target, (GLint)level, 0, 0, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
   } else {
+    log_texture_upload(id, level, w, h, fmt, nbytes, data);
     auto px = repack16(fmt, data, w, h, pitch);
     glTexSubImage2D(target, (GLint)level, 0, 0, (GLsizei)w, (GLsizei)h, f.format, f.type, px.data());
   }
-  (void)rows;
 }
 
 static void create_renderbuffer(uint32_t id, uint32_t w, uint32_t h, uint32_t fmt) {
