@@ -220,8 +220,6 @@ uint32_t surf_GetContainer(Cpu* c, ComObject*) {
   return d3d::D3DERR_INVALIDCALL;
 }
 
-uint32_t surf_GetType(Cpu*, ComObject*) { return d3d::RTYPE_SURFACE; }
-
 uint32_t tex_SetLOD(Cpu*, ComObject*) { return S_OK; }
 
 uint32_t tex_GetLOD(Cpu*, ComObject*) { return 0; }
