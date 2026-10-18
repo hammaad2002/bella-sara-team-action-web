@@ -49,7 +49,8 @@ const hintsPath = opt("--hints");
 const hints = hintsPath ? await loadGhidraHints(hintsPath) : undefined;
 const t0 = performance.now();
 const prog = new Program(pe, hints ?? {});
-prog.discover();
+// Match gen-c / browser coverage: Ghidra hints plus speculative code-pointer discovery.
+prog.discover({ speculate: true });
 const t1 = performance.now();
 
 const importIndex = new Map(pe.imports.map((im, i) => [im.iatSlot, i]));
