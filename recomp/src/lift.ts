@@ -618,7 +618,7 @@ class FnLifter {
       case Mnemonic.Pushf:
       case Mnemonic.Popf: {
         // 16-bit PUSHF/POPF (operand-size 66 prefix): only the low 16 EFLAGS bits move.
-        const wide = i.stackIncrement !== -2;
+        const wide = Math.abs(i.stackIncrement) !== 2;
         if (i.mnemonic === Mnemonic.Pushf) {
           const v = this.composeEflags();
           if (wide) this.push(v);
