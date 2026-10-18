@@ -128,6 +128,17 @@ inline constexpr Method kIDirect3DTexture8[] = {
     {"GetSurfaceLevel", 2}, {"LockRect", 4}, {"UnlockRect", 1}, {"AddDirtyRect", 1},
 };
 
+inline constexpr Method kIDirect3DCubeTexture8[] = {
+    {"QueryInterface", 2}, {"AddRef", 0}, {"Release", 0}, {"GetDevice", 1}, {"SetPrivateData", 3},
+    {"GetPrivateData", 3}, {"FreePrivateData", 1}, {"SetPriority", 1}, {"GetPriority", 0}, {"PreLoad", 0},
+    {"GetType", 0}, {"SetLOD", 1}, {"GetLOD", 0}, {"GetLevelCount", 0}, {"GetLevelDesc", 2},
+    {"GetCubeMapSurface", 3}, {"LockRect", 5}, {"UnlockRect", 2}, {"AddDirtyRect", 2},
+};
+
+inline constexpr Method kIDirect3DSwapChain8[] = {
+    {"QueryInterface", 2}, {"AddRef", 0}, {"Release", 0}, {"Present", 4}, {"GetBackBuffer", 3},
+};
+
 inline constexpr Method kIDirect3DVertexBuffer8[] = {
     {"QueryInterface", 2}, {"AddRef", 0}, {"Release", 0}, {"GetDevice", 1}, {"SetPrivateData", 3},
     {"GetPrivateData", 3}, {"FreePrivateData", 1}, {"SetPriority", 1}, {"GetPriority", 0}, {"PreLoad", 0},

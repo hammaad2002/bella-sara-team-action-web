@@ -77,7 +77,7 @@ class Device8 : public ComObject {
   uint32_t pp[14] = {};
   d3d::State st;
   Surface8* back_buffer = nullptr;
-  Surface8* render_target = nullptr;
+  ComObject* render_target = nullptr;
   Surface8* depth_stencil = nullptr;
   StateBlock8* recording = nullptr;
   bool in_scene = false;
@@ -97,6 +97,7 @@ class Device8 : public ComObject {
 };
 
 Device8* D(ComObject* o) { return static_cast<Device8*>(o); }
+uint32_t Present(Cpu* c, ComObject* self);
 float fl(uint32_t v) { return bits2f32(v); }
 
 std::vector<d3d::VertexElement> fvf_elements(uint32_t fvf) {
@@ -272,6 +273,75 @@ void copy_surface_rect(Surface8* src, int sx, int sy, Surface8* dst, int dx, int
   }
 }
 
+void copy_mem_rect(uint32_t src_mem, uint32_t src_pitch, uint32_t dst_mem, uint32_t dst_pitch, uint32_t fmt, int sx,
+                   int sy, int dx, int dy, int w, int h) {
+  d3d::FormatInfo f = d3d::format_info(fmt);
+  if (f.block) {
+    sx /= 4;
+    sy /= 4;
+    dx /= 4;
+    dy /= 4;
+    w = (w + 3) / 4;
+    h = (h + 3) / 4;
+    for (int y = 0; y < h; y++)
+      memcpy(host(dst_mem + (uint32_t)(dy + y) * dst_pitch + (uint32_t)dx * f.block),
+             host(src_mem + (uint32_t)(sy + y) * src_pitch + (uint32_t)sx * f.block), (size_t)w * f.block);
+  } else {
+    uint32_t bpp = f.bpp / 8;
+    for (int y = 0; y < h; y++)
+      memcpy(host(dst_mem + (uint32_t)(dy + y) * dst_pitch + (uint32_t)dx * bpp),
+             host(src_mem + (uint32_t)(sy + y) * src_pitch + (uint32_t)sx * bpp), (size_t)w * bpp);
+  }
+}
+
+bool resolve_surface_mem(ComObject* o, uint32_t* w, uint32_t* h, uint32_t* fmt, uint32_t* pitch, uint32_t* mem) {
+  if (auto* s = dynamic_cast<Surface8*>(o)) {
+    *mem = s->ensure_memory();
+    *w = s->width;
+    *h = s->height;
+    *fmt = s->format;
+    *pitch = s->pitch;
+    return true;
+  }
+  if (auto* ts = dynamic_cast<TextureLevelSurface8*>(o)) {
+    Texture8* t = ts->tex;
+    if (!t || ts->level >= t->levels || (t->is_cube && ts->face >= 6)) return false;
+    size_t idx = t->slot_index(ts->face, ts->level);
+    if (idx >= t->level.size()) return false;
+    texture_ensure_mem(t, ts->level);
+    TexLevel& lv = t->level[idx];
+    if (!lv.mem) {
+      uint32_t rows = d3d::level_rows(t->format, lv.h);
+      lv.mem = heap_alloc(process_heap(), lv.pitch * rows, true);
+    }
+    *mem = lv.mem;
+    *w = lv.w;
+    *h = lv.h;
+    *fmt = t->format;
+    *pitch = lv.pitch;
+    return true;
+  }
+  return false;
+}
+
+struct SwapChain8 : public ComObject {
+  const char* type_name() const override { return "D3D8SwapChain"; }
+  Device8* device = nullptr;
+  Surface8* back_buffer = nullptr;
+};
+
+uint32_t swapchain_Present(Cpu* c, ComObject* self) {
+  return Present(c, static_cast<SwapChain8*>(self)->device);
+}
+
+uint32_t swapchain_GetBackBuffer(Cpu* c, ComObject* self) {
+  Surface8* bb = static_cast<SwapChain8*>(self)->back_buffer;
+  if (!bb) return d3d::D3DERR_INVALIDCALL;
+  bb->refs++;
+  st32(arg(c, 3), expose_d3d8_surface(bb));
+  return S_OK;
+}
+
 void set_transform(Device8* d, uint32_t s, const d3d::Mat4& m) {
   d->st.transforms[s] = m;
   rec().u32(cmd::OpSetTransform);
@@ -429,32 +499,47 @@ uint32_t GetGammaRamp(Cpu* c, ComObject* self) {
 
 uint32_t SetRenderTarget(Cpu* c, ComObject* self) {
   Device8* d = D(self);
-  Surface8* s = arg(c, 1) ? static_cast<Surface8*>(com_object(arg(c, 1))) : nullptr;
-  Surface8* zs = arg(c, 2) ? static_cast<Surface8*>(com_object(arg(c, 2))) : nullptr;
-  if (s) s->refs++;
-  d->render_target = s ? s : d->back_buffer;
-  uint32_t kind = 0, id = 0;
-  if (s == d->back_buffer) {
+  ComObject* rt_obj = arg(c, 1) ? com_object(arg(c, 1)) : nullptr;
+  Surface8* zs = arg(c, 2) ? dynamic_cast<Surface8*>(com_object(arg(c, 2))) : nullptr;
+  if (rt_obj) rt_obj->refs++;
+  d->render_target = rt_obj ? rt_obj : d->back_buffer;
+  uint32_t kind = 0, id = 0, face = 0, level = 0, rtw = 0, rth = 0;
+  if (!rt_obj || rt_obj == d->back_buffer) {
     kind = 1;
-  } else if (s && s->gl_tex) {
-    kind = 2;
-    id = s->gl_tex;
-  } else if (s && s->gl_rb) {
-    kind = 3;
-    id = s->gl_rb;
+    if (d->back_buffer) rtw = d->back_buffer->width, rth = d->back_buffer->height;
+  } else if (auto* s = dynamic_cast<Surface8*>(rt_obj)) {
+    rtw = s->width;
+    rth = s->height;
+    if (s->gl_tex) {
+      kind = 2;
+      id = s->gl_tex;
+    } else if (s->gl_rb) {
+      kind = 3;
+      id = s->gl_rb;
+    }
+  } else if (auto* ts = dynamic_cast<TextureLevelSurface8*>(rt_obj)) {
+    if (ts->tex && ts->level < ts->tex->levels) {
+      kind = 2;
+      id = ts->tex->gl_tex;
+      face = ts->face;
+      level = ts->level;
+      size_t idx = ts->tex->slot_index(face, level);
+      rtw = ts->tex->level[idx].w;
+      rth = ts->tex->level[idx].h;
+    }
   }
-  rec().op(cmd::OpSetRenderTarget, {0, kind, id, 0, 0});
+  rec().op(cmd::OpSetRenderTarget, {0, kind, id, face, level});
   if (zs) {
     zs->refs++;
     d->depth_stencil = zs;
     if (zs->gl_rb) rec().op(cmd::OpSetDepthStencil, {3u, zs->gl_rb});
   }
-  if (s) set_viewport(d, d3d::Viewport{0, 0, s->width, s->height, 0.0f, 1.0f});
+  if (rt_obj && rtw && rth) set_viewport(d, d3d::Viewport{0, 0, rtw, rth, 0.0f, 1.0f});
   return S_OK;
 }
 
 uint32_t GetRenderTarget(Cpu* c, ComObject* self) {
-  Surface8* s = D(self)->render_target ? D(self)->render_target : D(self)->back_buffer;
+  ComObject* s = D(self)->render_target ? D(self)->render_target : D(self)->back_buffer;
   if (!s) {
     st32(arg(c, 1), 0);
     return d3d::D3DERR_NOTFOUND;
@@ -942,20 +1027,29 @@ uint32_t CreateImageSurface(Cpu* c, ComObject* self) {
 }
 
 uint32_t CopyRects(Cpu* c, ComObject*) {
-  Surface8* src = static_cast<Surface8*>(com_object(arg(c, 1)));
+  ComObject* src_obj = com_object(arg(c, 1));
   uint32_t rects = arg(c, 2);
   (void)arg(c, 3);  // cRects (only first rect used when non-null)
-  Surface8* dst = static_cast<Surface8*>(com_object(arg(c, 4)));
+  ComObject* dst_obj = com_object(arg(c, 4));
   uint32_t points = arg(c, 5);
-  if (!src || !dst) return d3d::D3DERR_INVALIDCALL;
+  if (!src_obj || !dst_obj) return d3d::D3DERR_INVALIDCALL;
+  uint32_t sw = 0, sh = 0, sfmt = 0, spitch = 0, smem = 0;
+  uint32_t dw = 0, dh = 0, dfmt = 0, dpitch = 0, dmem = 0;
+  if (!resolve_surface_mem(src_obj, &sw, &sh, &sfmt, &spitch, &smem) ||
+      !resolve_surface_mem(dst_obj, &dw, &dh, &dfmt, &dpitch, &dmem))
+    return d3d::D3DERR_INVALIDCALL;
   if (!rects) {
-    copy_surface_rect(src, 0, 0, dst, 0, 0, (int)src->width, (int)src->height);
+    copy_mem_rect(smem, spitch, dmem, dpitch, sfmt, 0, 0, 0, 0, (int)sw, (int)sh);
   } else {
-    copy_surface_rect(src, (int)ld32(rects), (int)ld32(rects + 4), dst, points ? (int)ld32(points) : 0,
-                      points ? (int)ld32(points + 4) : 0, (int)ld32(rects + 8) - (int)ld32(rects),
-                      (int)ld32(rects + 12) - (int)ld32(rects + 4));
+    copy_mem_rect(smem, spitch, dmem, dpitch, sfmt, (int)ld32(rects), (int)ld32(rects + 4),
+                  points ? (int)ld32(points) : 0, points ? (int)ld32(points + 4) : 0,
+                  (int)ld32(rects + 8) - (int)ld32(rects), (int)ld32(rects + 12) - (int)ld32(rects + 4));
   }
-  if (dst->gl_tex) upload_surface8(dst);
+  if (auto* dst_s = dynamic_cast<Surface8*>(dst_obj)) {
+    if (dst_s->gl_tex) upload_surface8(dst_s);
+  } else if (auto* dst_ts = dynamic_cast<TextureLevelSurface8*>(dst_obj)) {
+    if (dst_ts->tex) upload_tex_face_level(dst_ts->tex, dst_ts->face, dst_ts->level);
+  }
   return S_OK;
 }
 
@@ -976,7 +1070,43 @@ uint32_t GetFrontBuffer(Cpu* c, ComObject* self) {
 }
 
 uint32_t CreateVolumeTexture(Cpu*, ComObject*) { return d3d::D3DERR_INVALIDCALL; }
-uint32_t CreateCubeTexture(Cpu*, ComObject*) { return d3d::D3DERR_INVALIDCALL; }
+
+uint32_t CreateCubeTexture(Cpu* c, ComObject*) {
+  uint32_t edge = arg(c, 1), levels = arg(c, 2), usage = arg(c, 3), fmt = arg(c, 4), pool = arg(c, 5), out = arg(c, 6);
+  if (out < kNullGuardEnd || !edge || !d3d::format_info(fmt).known) return d3d8::D3DERR_INVALIDCALL;
+  uint32_t lv = levels;
+  if (!lv) {
+    lv = 1;
+    for (uint32_t m = edge; m > 1; m >>= 1) lv++;
+  }
+  uint32_t gl = new_gl_id();
+  rec().op(cmd::OpCreateTexture, {gl, 1u, edge, edge, lv, fmt, (usage & d3d::USAGE_RENDERTARGET) ? 1u : 0u});
+  Texture8* t = create_cube_texture8(edge, lv, usage, fmt, pool, gl);
+  st32(out, wrap_cube_texture8(t));
+  return S_OK;
+}
+
+uint32_t CreateAdditionalSwapChain(Cpu* c, ComObject* self) {
+  Device8* d = D(self);
+  uint32_t pp = arg(c, 1), out = arg(c, 2);
+  if (out < kNullGuardEnd || pp < kNullGuardEnd) return d3d8::D3DERR_INVALIDCALL;
+  uint32_t w = ld32(pp), h = ld32(pp + 4), fmt = ld32(pp + 8);
+  if (!w) w = d->pp[0];
+  if (!h) h = d->pp[1];
+  if (!fmt) fmt = d->pp[2];
+  auto* sc = new SwapChain8();
+  sc->device = d;
+  sc->back_buffer = new Surface8();
+  sc->back_buffer->device = d;
+  sc->back_buffer->width = w;
+  sc->back_buffer->height = h;
+  sc->back_buffer->format = fmt;
+  sc->back_buffer->usage = d3d::USAGE_RENDERTARGET;
+  sc->back_buffer->pool = d3d::POOL_DEFAULT;
+  com_wrap(sc->back_buffer, iface_d3d8_surface());
+  st32(out, com_wrap(sc, iface_d3d8_swap_chain()));
+  return S_OK;
+}
 
 uint32_t DrawPrimitiveUP(Cpu* c, ComObject* self) {
   Device8* d = D(self);
@@ -1160,7 +1290,7 @@ rt::ComInterface& iface_d3d8_device() {
                          {"SetCursorProperties", 3, ok3},
                          {"SetCursorPosition", 3, ok3},
                          {"ShowCursor", 1, ShowCursor},
-                         {"CreateAdditionalSwapChain", 2, nullptr},
+                         {"CreateAdditionalSwapChain", 2, CreateAdditionalSwapChain},
                          {"Reset", 1, Reset},
                          {"Present", 4, Present},
                          {"GetBackBuffer", 3, GetBackBuffer},
@@ -1383,6 +1513,20 @@ void d3d8_verify_registered_nargs() {
                      sizeof sdk_nargs::kIDirect3DIndexBuffer8 / sizeof sdk_nargs::kIDirect3DIndexBuffer8[0]);
   verify_iface_nargs("IDirect3DStateBlock8", iface_d3d8_state_block(), sdk_nargs::kIDirect3DStateBlock8,
                      sizeof sdk_nargs::kIDirect3DStateBlock8 / sizeof sdk_nargs::kIDirect3DStateBlock8[0]);
+  verify_iface_nargs("IDirect3DCubeTexture8", iface_d3d8_cube_texture(), sdk_nargs::kIDirect3DCubeTexture8,
+                     sizeof sdk_nargs::kIDirect3DCubeTexture8 / sizeof sdk_nargs::kIDirect3DCubeTexture8[0]);
+  verify_iface_nargs("IDirect3DSwapChain8", iface_d3d8_swap_chain(), sdk_nargs::kIDirect3DSwapChain8,
+                     sizeof sdk_nargs::kIDirect3DSwapChain8 / sizeof sdk_nargs::kIDirect3DSwapChain8[0]);
+}
+
+rt::ComInterface& iface_d3d8_swap_chain() {
+  static ComInterface i("IDirect3DSwapChain8",
+                        {{"QueryInterface", 2, com_QueryInterface_none},
+                         {"AddRef", 0, com_AddRef},
+                         {"Release", 0, com_Release},
+                         {"Present", 4, swapchain_Present},
+                         {"GetBackBuffer", 3, swapchain_GetBackBuffer}});
+  return i;
 }
 
 }  // namespace d3d8
