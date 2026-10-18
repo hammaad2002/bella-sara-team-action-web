@@ -97,6 +97,7 @@ inline constexpr Method kIDirect3DDevice8[] = {
     {"DeleteVertexShader", 1},
     {"SetVertexShaderConstant", 3},
     {"GetVertexShaderConstant", 3},
+    {"GetVertexShaderDeclaration", 3},
     {"GetVertexShaderFunction", 3},
     {"SetStreamSource", 3},
     {"GetStreamSource", 3},
@@ -117,7 +118,7 @@ inline constexpr Method kIDirect3DDevice8[] = {
 inline constexpr Method kIDirect3DSurface8[] = {
     {"QueryInterface", 2}, {"AddRef", 0}, {"Release", 0}, {"GetDevice", 1}, {"SetPrivateData", 3},
     {"GetPrivateData", 3}, {"FreePrivateData", 1}, {"GetContainer", 2}, {"GetDesc", 1}, {"LockRect", 3},
-    {"UnlockRect", 1},
+    {"UnlockRect", 0},
 };
 
 inline constexpr Method kIDirect3DTexture8[] = {

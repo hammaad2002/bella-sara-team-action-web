@@ -219,10 +219,18 @@ uint32_t vb_GetType(Cpu*, ComObject*) { return d3d::RTYPE_VERTEXBUFFER; }
 
 uint32_t ib_GetType(Cpu*, ComObject*) { return d3d::RTYPE_INDEXBUFFER; }
 
+static uint32_t lock_rect_offset(uint32_t fmt, uint32_t pitch, uint32_t rect) {
+  if (!rect) return 0;
+  uint32_t left = ld32(rect), top = ld32(rect + 4);
+  d3d::FormatInfo f = d3d::format_info(fmt);
+  return f.block ? (top / 4) * pitch + (left / 4) * f.block : top * pitch + left * f.bpp / 8;
+}
+
 uint32_t surf_GetDesc(Cpu* c, ComObject* self) {
   uint32_t p = arg(c, 1);
   if (p < kNullGuardEnd) return d3d::D3DERR_INVALIDCALL;
   uint32_t w = 800, h = 600, fmt = d3d::FMT_X8R8G8B8, usage = d3d::USAGE_RENDERTARGET, pool = d3d::POOL_DEFAULT;
+  uint32_t pitch = d3d::row_pitch(fmt, w);
   if (auto* ts = dynamic_cast<TextureLevelSurface8*>(self)) {
     Texture8* t = ts->tex;
     if (t && ts->level < t->levels) {
@@ -231,21 +239,29 @@ uint32_t surf_GetDesc(Cpu* c, ComObject* self) {
       fmt = t->format;
       usage = t->usage;
       pool = t->pool;
+      pitch = t->level[ts->level].pitch;
     }
+  } else if (auto* s = dynamic_cast<Surface8*>(self)) {
+    w = s->width;
+    h = s->height;
+    fmt = s->format;
+    usage = s->usage;
+    pool = s->pool;
+    pitch = s->pitch ? s->pitch : d3d::row_pitch(fmt, w);
   }
   st32(p + 0, fmt);
   st32(p + 4, d3d::RTYPE_SURFACE);
   st32(p + 8, usage);
   st32(p + 12, pool);
-  st32(p + 16, 0);  // MultiSampleType
-  st32(p + 20, 0);  // MultiSampleQuality
+  st32(p + 16, pitch * d3d::level_rows(fmt, h));
+  st32(p + 20, 0);  // MultiSampleType
   st32(p + 24, w);
   st32(p + 28, h);
   return S_OK;
 }
 
 uint32_t surf_LockRect(Cpu* c, ComObject* self) {
-  uint32_t out = arg(c, 2);
+  uint32_t out = arg(c, 1), rect = arg(c, 2), flags = arg(c, 3);
   if (out < kNullGuardEnd) return d3d::D3DERR_INVALIDCALL;
   uint32_t pitch = 0, mem = 0;
   if (auto* ts = dynamic_cast<TextureLevelSurface8*>(self)) {
@@ -255,8 +271,20 @@ uint32_t surf_LockRect(Cpu* c, ComObject* self) {
       if (lv.dirty && lv.mem) upload_tex_level(t, ts->level);
       mem = tex_ensure_level_mem(t, ts->level);
       pitch = lv.pitch;
-      lv.dirty = true;
+      uint32_t off = lock_rect_offset(t->format, pitch, rect);
+      if (!(flags & 0x10)) lv.dirty = true;
+      st32(out, pitch);
+      st32(out + 4, mem + off);
+      return S_OK;
     }
+  } else if (auto* s = dynamic_cast<Surface8*>(self)) {
+    mem = s->ensure_memory();
+    pitch = s->pitch;
+    uint32_t off = lock_rect_offset(s->format, pitch, rect);
+    if (!(flags & 0x10)) s->dirty = true;
+    st32(out, pitch);
+    st32(out + 4, mem + off);
+    return S_OK;
   }
   st32(out, pitch);
   st32(out + 4, mem);
@@ -267,6 +295,8 @@ uint32_t surf_UnlockRect(Cpu*, ComObject* self) {
   if (auto* ts = dynamic_cast<TextureLevelSurface8*>(self)) {
     Texture8* t = ts->tex;
     if (t && ts->level < t->levels && t->level[ts->level].dirty) upload_tex_level(t, ts->level);
+  } else if (auto* s = dynamic_cast<Surface8*>(self)) {
+    if (s->dirty && s->gl_tex) upload_surface8(s);
   }
   return S_OK;
 }
@@ -283,7 +313,7 @@ uint32_t tex_GetLevelDesc(Cpu* c, ComObject* self) {
   st32(p + 4, d3d::RTYPE_TEXTURE);
   st32(p + 8, t->usage);
   st32(p + 12, t->pool);
-  st32(p + 16, 0);
+  st32(p + 16, t->level[level].pitch * d3d::level_rows(t->format, h));
   st32(p + 20, 0);
   st32(p + 24, w);
   st32(p + 28, h);
@@ -318,7 +348,7 @@ uint32_t tex_GetSurfaceLevel(Cpu* c, ComObject* self) {
 
 uint32_t tex_LockRect(Cpu* c, ComObject* self) {
   Texture8* t = T8(self);
-  uint32_t level = arg(c, 1), out = arg(c, 3), rect = arg(c, 2), flags = arg(c, 4);
+  uint32_t level = arg(c, 1), out = arg(c, 2), rect = arg(c, 3), flags = arg(c, 4);
   if (level >= t->levels) return d3d::D3DERR_INVALIDCALL;
   TexLevel& lv = t->level[level];
   if (lv.dirty && lv.mem) upload_tex_level(t, level);
@@ -488,7 +518,7 @@ rt::ComInterface& iface_d3d8_surface() {
                          {"GetContainer", 2, surf_GetContainer},
                          {"GetDesc", 1, surf_GetDesc},
                          {"LockRect", 3, surf_LockRect},
-                         {"UnlockRect", 1, surf_UnlockRect}});
+                         {"UnlockRect", 0, surf_UnlockRect}});
   return i;
 }
 

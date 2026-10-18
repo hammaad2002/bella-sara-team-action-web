@@ -10,17 +10,6 @@ using namespace rt;
 
 namespace d3d8 {
 
-void try_link_device_material_cache(Cpu* c) {
-  uint32_t shell = ld32(0x763258u);
-  if (!shell) return;
-  uint32_t dev_base = ld32(0x7630f0u);
-  uint32_t global_base = ld32(0x77ecc0u);
-  if (ld32(dev_base + shell + 0x1cu)) return;
-  uint32_t root = ld32(global_base + shell + 0x1cu);
-  if (!root) return;
-  guest_call(c, 0x00588360u, {root});
-}
-
 namespace {
 
 class Direct3D8 : public ComObject {
@@ -111,7 +100,6 @@ uint32_t CheckDeviceType(Cpu* c, ComObject*) {
 }
 
 uint32_t CheckDeviceFormat(Cpu* c, ComObject*) {
-  try_link_device_material_cache(c);
   uint32_t usage = arg(c, 4), rtype = arg(c, 5), fmt = arg(c, 6);
   log(Log::Hle, "CheckDeviceFormat: usage=%08x rtype=%08x fmt=%08x (%s)", usage, rtype, fmt, d3d::format_name(fmt));
   if (usage & d3d::USAGE_DEPTHSTENCIL) return supported_depth_format(fmt) ? S_OK : d3d::D3DERR_NOTAVAILABLE;

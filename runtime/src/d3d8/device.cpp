@@ -61,22 +61,6 @@ void flush_stream(bool /*present*/) {
 
 class Device8;
 
-class Surface8 : public ComObject {
- public:
-  const char* type_name() const override { return "D3D8Surface"; }
-  Device8* device = nullptr;
-  uint32_t width = 0, height = 0, format = 0, usage = 0, pool = 0;
-  uint32_t mem = 0, pitch = 0;
-  uint32_t gl_tex = 0, gl_rb = 0;
-  uint32_t ensure_memory() {
-    if (!mem) {
-      pitch = d3d::row_pitch(format, width);
-      mem = heap_alloc(process_heap(), pitch * d3d::level_rows(format, height), true);
-    }
-    return mem;
-  }
-};
-
 struct StreamBinding {
   uint32_t gl_buf = 0;
   uint32_t guest_vb = 0;
@@ -286,14 +270,6 @@ void copy_surface_rect(Surface8* src, int sx, int sy, Surface8* dst, int dx, int
       memcpy(host(dst->mem + (uint32_t)(dy + y) * dst->pitch + (uint32_t)dx * bpp),
              host(src->mem + (uint32_t)(sy + y) * src->pitch + (uint32_t)sx * bpp), (size_t)w * bpp);
   }
-}
-
-void upload_surface8(Surface8* s) {
-  if (!s->mem || !s->gl_tex) return;
-  uint32_t rows = d3d::level_rows(s->format, s->height);
-  uint32_t bytes = s->pitch * rows;
-  rec().op(cmd::OpUploadTexture, {s->gl_tex, 0, 0, s->width, s->height, s->format, s->pitch, rows, bytes});
-  rec().bytes(host(s->mem), bytes);
 }
 
 void set_transform(Device8* d, uint32_t s, const d3d::Mat4& m) {
@@ -581,7 +557,11 @@ uint32_t CreateTexture(Cpu* c, ComObject*) {
     log(Log::Warn, "D3D8 CreateTexture: unsupported format %08x", fmt);
     return d3d::D3DERR_INVALIDCALL;
   }
-  uint32_t lv = levels ? levels : 1;
+  uint32_t lv = levels;
+  if (!lv) {
+    lv = 1;
+    for (uint32_t m = std::max(w, h); m > 1; m >>= 1) lv++;
+  }
   uint32_t gl = new_gl_id();
   rec().op(cmd::OpCreateTexture, {gl, 0, w, h, lv, fmt, (usage & d3d::USAGE_RENDERTARGET) ? 1u : 0u});
   Texture8* t = create_texture8(w, h, lv, usage, fmt, pool, gl);
@@ -654,24 +634,9 @@ uint32_t GetVertexShader(Cpu* c, ComObject* self) {
   return S_OK;
 }
 
-static uint32_t pilotlight_named_texture_out(Cpu* c, uint32_t out, uint32_t name) {
-  if (out < kNullGuardEnd) return d3d8::D3DERR_INVALIDCALL;
-  (void)name;
-  uint32_t gl = new_gl_id();
-  rec().op(cmd::OpCreateTexture, {gl, 0, 4, 4, 1, d3d::FMT_A8R8G8B8, 0});
-  Texture8* t = create_texture8(4, 4, 1, 0, d3d::FMT_A8R8G8B8, 0, gl);
-  st32(out, wrap_texture8(t));
-  return S_OK;
-}
-
-static bool pilotlight_texture_out_ptr(uint32_t p) { return p >= 0x763000u && p < 0x764000u; }
-
 uint32_t SetPixelShader(Cpu* c, ComObject* self) {
-  // f_00595360: device +0x15C with PilotLight name + out globals (0x76306c..), not a shader handle.
-  uint32_t a1 = arg(c, 1), a2 = arg(c, 2);
-  if (pilotlight_texture_out_ptr(a2)) return pilotlight_named_texture_out(c, a2, a1);
   Device8* d = D(self);
-  d->ps_handle = a1;
+  d->ps_handle = arg(c, 1);
   emit_shaders(d);
   return S_OK;
 }
@@ -834,6 +799,13 @@ uint32_t DeleteVertexShader(Cpu* c, ComObject*) {
   ComObject* o = com_object(arg(c, 1));
   if (!o) return d3d::D3DERR_INVALIDCALL;
   return com_Release(c, o);
+}
+
+uint32_t GetVertexShaderDeclaration(Cpu* c, ComObject*) {
+  (void)arg(c, 1);
+  (void)arg(c, 2);
+  if (arg(c, 3) >= kNullGuardEnd) st32(arg(c, 3), 0);
+  return S_OK;
 }
 
 uint32_t GetVertexShaderFunction(Cpu* c, ComObject*) {
@@ -1084,7 +1056,11 @@ uint32_t Reset(Cpu* c, ComObject* self) {
     for (int i = 0; i < 14; i++) d->pp[i] = ld32(pp + 4 * (uint32_t)i);
     if (!d->pp[0] || !d->pp[1]) {
       int w, h;
-      plat::get_display_size(&w, &h);
+      plat::get_window_size(&w, &h);
+      if (!w || !h) {
+        w = 800;
+        h = 600;
+      }
       d->pp[0] = (uint32_t)w;
       d->pp[1] = (uint32_t)h;
       st32(pp, d->pp[0]);
@@ -1142,7 +1118,11 @@ uint32_t create_d3d8_device(Cpu* c, ComObject*) {
   for (int i = 0; i < 14; i++) dev->pp[i] = ld32(pp + 4 * (uint32_t)i);
   if (!dev->pp[0] || !dev->pp[1]) {
     int w, h;
-    plat::get_display_size(&w, &h);
+    plat::get_window_size(&w, &h);
+    if (!w || !h) {
+      w = 800;
+      h = 600;
+    }
     dev->pp[0] = (uint32_t)w;
     dev->pp[1] = (uint32_t)h;
     st32(pp, dev->pp[0]);
@@ -1248,6 +1228,7 @@ rt::ComInterface& iface_d3d8_device() {
                          {"DeleteVertexShader", 1, DeleteVertexShader},
                          {"SetVertexShaderConstant", 3, SetVertexShaderConstant},
                          {"GetVertexShaderConstant", 3, GetVertexShaderConstant},
+                         {"GetVertexShaderDeclaration", 3, GetVertexShaderDeclaration},
                          {"GetVertexShaderFunction", 3, GetVertexShaderFunction},
                          {"SetStreamSource", 3, SetStreamSource},
                          {"GetStreamSource", 3, GetStreamSource},
@@ -1342,6 +1323,16 @@ void fill_device_caps(uint32_t p) {
 
 cmd::Stream& d3d8_cmd_stream() { return g_stream; }
 
+void upload_surface8(Surface8* s) {
+  if (!s->mem || !s->gl_tex) return;
+  uint32_t rows = d3d::level_rows(s->format, s->height);
+  uint32_t bytes = s->pitch * rows;
+  cmd::Stream& stream = d3d8_cmd_stream();
+  stream.op(cmd::OpUploadTexture, {s->gl_tex, 0, 0, s->width, s->height, s->format, s->pitch, rows, bytes});
+  stream.bytes(host(s->mem), bytes);
+  s->dirty = false;
+}
+
 void apply_state_block8(StateBlock8* sb) {
   Device8* d = static_cast<Device8*>(sb->device);
   if (!d) return;
@@ -1395,3 +1386,13 @@ void d3d8_verify_registered_nargs() {
 }
 
 }  // namespace d3d8
+
+namespace plat {
+__attribute__((weak)) void get_display_size(int* width, int* height) {
+  if (width) *width = 640;
+  if (height) *height = 480;
+}
+__attribute__((weak)) void get_window_size(int* width, int* height) {
+  get_display_size(width, height);
+}
+}  // namespace plat

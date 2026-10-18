@@ -6,6 +6,13 @@
 #include <set>
 #include <unordered_map>
 
+namespace plat {
+__attribute__((weak)) void gl_create_context() {}
+__attribute__((weak)) void gl_swap() {}
+__attribute__((weak)) void gl_set_swap_interval(int) {}
+__attribute__((weak)) void frame_presented(uint64_t) {}
+}  // namespace plat
+
 namespace rt {
 
 namespace {
@@ -25,14 +32,6 @@ int com_stdcall_pop_dwords(Cpu* c, int nargs, const char* method) {
   if (strcmp(method, "CheckDeviceMultiSampleType") == 0) return nargs;
   // Guest 00590567 / 00590704: GetAdapterModeCount pushes this + Format only (Adapter is global).
   if (strcmp(method, "GetAdapterModeCount") == 0) return nargs;
-  if (strcmp(method, "SetPixelShader") == 0) {
-    uint32_t a2 = ld32(c->esp + 12);
-    if (a2 >= 0x763000u && a2 < 0x764000u) return 3;
-  }
-  if (strcmp(method, "Present") == 0) {
-    uint32_t a1 = ld32(c->esp + 8);
-    if (a1 >= 0x00400000u && a1 < 0x00a00000u) return 2;
-  }
   return nargs + 1;
 }
 

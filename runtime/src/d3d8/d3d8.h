@@ -10,7 +10,6 @@
 
 namespace d3d8 {
 
-void try_link_device_material_cache(Cpu* c);
 void d3d8_verify_registered_nargs();
 
 constexpr uint32_t kD3d8SdkVersion = 220;  // the SDK summer 2002 release the game was built against
@@ -67,7 +66,23 @@ struct StateBlock8 : public rt::ComObject {
   bool recorded = false;
 };
 
-struct Surface8;
+struct Surface8 : public rt::ComObject {
+  const char* type_name() const override { return "D3D8Surface"; }
+  rt::ComObject* device = nullptr;
+  uint32_t width = 0, height = 0, format = 0, usage = 0, pool = 0;
+  uint32_t mem = 0, pitch = 0;
+  uint32_t gl_tex = 0, gl_rb = 0;
+  bool dirty = false;
+  uint32_t ensure_memory() {
+    if (!mem) {
+      pitch = d3d::row_pitch(format, width);
+      mem = rt::heap_alloc(rt::process_heap(), pitch * d3d::level_rows(format, height), true);
+    }
+    return mem;
+  }
+};
+
+void upload_surface8(Surface8* s);
 
 void apply_state_block8(StateBlock8* sb);
 void capture_state_block8(StateBlock8* sb);
