@@ -74,8 +74,8 @@ std::string ff_vertex_glsl(const ProgKey& k) {
   if (!rhw) {
     o("uniform mat4 u_wv[4];\nuniform mat3 u_nm[4];\nuniform mat4 u_proj;\n");
     if (k.lighting) o("uniform vec4 u_mat[5];\nuniform vec4 u_amb;\nuniform vec4 u_light[56];\n");
-    if (k.ntc) o("uniform mat4 u_tm[8];\n");
   }
+  if (k.ntc) o("uniform mat4 u_tm[8];\n");
   if (k.vfog >= 2 && k.vfog <= 4) o("uniform vec4 u_fog;\n");
   if (k.points) o("uniform vec4 u_pt;\nuniform vec4 u_ptk;\n");
   declare_vs_outputs(o);
@@ -87,7 +87,6 @@ std::string ff_vertex_glsl(const ProgKey& k) {
     o("  vec2 ndc = (a0.xy + 0.5 - u_vp.xy) / u_vp.zw * 2.0 - 1.0;\n");
     o("  gl_Position = vec4(ndc * w, (a0.z * 2.0 - 1.0) * w, w);\n");
     o("  v_c0 = %s;\n  v_c1 = %s;\n", c0.c_str(), c1.c_str());
-    if (k.ntc) o("uniform mat4 u_tm[8];\n");
     for (int i = 0; i < k.ntc; i++) {
       if (k.tc_src[i] < 8 && k.tc_dims[i]) {
         int d = k.tc_dims[i];
@@ -95,12 +94,12 @@ std::string ff_vertex_glsl(const ProgKey& k) {
         static const char* pad[5] = {"", "vec4(a%d.x, 1.0, 0.0, 0.0)", "vec4(a%d.xy, 1.0, 0.0)", "vec4(a%d.xyz, 1.0)", "a%d"};
         char buf[64];
         snprintf(buf, sizeof buf, pad[d], aloc);
-        // D3D8 XYZRHW texture coordinates are in pixel space; GL expects normalized UVs unless a
-        // texture matrix is active (D3DTSS_TEXTURETRANSFORMFLAGS).
+        // D3D8 XYZRHW texture coordinates are already normalized [0,1] unless a texture matrix is
+        // active (D3DTSS_TEXTURETRANSFORMFLAGS).
         if (k.tc_count[i]) {
           o("  v_t[%d] = u_tm[%d] * %s;\n", i, i, buf);
         } else {
-          o("  v_t[%d] = vec4((%s).xy / u_vp.zw, 0.0, 1.0);\n", i, buf);
+          o("  v_t[%d] = %s;\n", i, buf);
         }
       } else {
         o("  v_t[%d] = vec4(0.0, 0.0, 0.0, 1.0);\n", i);

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "audio/ffs.h"
+#include "gles/programs.h"
 
 using audio::FfsBank;
 using audio::FfsSampleInfo;
@@ -236,6 +237,32 @@ int main(int argc, char** argv) {
       expect(!bank->entry("NOPE.FSB", &e), "missing entry stays missing");
     } else {
       fail("reopen for lookup test");
+    }
+  }
+
+  // ff_vertex_glsl: XYZRHW uniforms at global scope; normalized UVs without viewport divide.
+  {
+    gles::ProgKey k{};
+    k.vs_kind = 1;
+    k.attr_mask = (1u << 0) | (1u << 5) | (1u << 7);
+    k.ntc = 1;
+    k.tc_src[0] = 0;
+    k.tc_dims[0] = 2;
+    k.tc_count[0] = 0;
+    const std::string vs = gles::ff_vertex_glsl(k);
+    const size_t main_pos = vs.find("void main()");
+    const size_t tm_pos = vs.find("uniform mat4 u_tm[8];");
+    expect(main_pos != std::string::npos, "ff_vertex_glsl rhw: void main()");
+    expect(tm_pos != std::string::npos && tm_pos < main_pos, "ff_vertex_glsl rhw: u_tm before main");
+    expect(vs.find("uniform mat4 u_tm[8];", main_pos) == std::string::npos,
+           "ff_vertex_glsl rhw: u_tm not inside main");
+    expect(vs.find("v_t[0] = vec4(a7.xy, 1.0, 0.0);") != std::string::npos,
+           "ff_vertex_glsl rhw: v_t[0] passthrough");
+    {
+      const size_t vt = vs.find("v_t[0]");
+      const size_t vt_end = vt == std::string::npos ? vt : vs.find('\n', vt);
+      const std::string vt_line = vs.substr(vt, vt_end - vt);
+      expect(vt_line.find("/ u_vp.zw") == std::string::npos, "ff_vertex_glsl rhw: no viewport UV divide");
     }
   }
 
