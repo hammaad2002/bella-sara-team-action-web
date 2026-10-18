@@ -502,40 +502,45 @@ uint32_t SetRenderTarget(Cpu* c, ComObject* self) {
   Device8* d = D(self);
   ComObject* rt_obj = arg(c, 1) ? com_object(arg(c, 1)) : nullptr;
   Surface8* zs = arg(c, 2) ? dynamic_cast<Surface8*>(com_object(arg(c, 2))) : nullptr;
-  if (rt_obj) rt_obj->refs++;
-  d->render_target = rt_obj ? rt_obj : d->back_buffer;
-  uint32_t kind = 0, id = 0, face = 0, level = 0, rtw = 0, rth = 0;
-  if (!rt_obj || rt_obj == d->back_buffer) {
-    kind = 1;
-    if (d->back_buffer) rtw = d->back_buffer->width, rth = d->back_buffer->height;
-  } else if (auto* s = dynamic_cast<Surface8*>(rt_obj)) {
-    rtw = s->width;
-    rth = s->height;
-    if (s->gl_tex) {
-      kind = 2;
-      id = s->gl_tex;
-    } else if (s->gl_rb) {
-      kind = 3;
-      id = s->gl_rb;
+  if (rt_obj) {
+    rt_obj->refs++;
+    d->render_target = rt_obj;
+    uint32_t kind = 0, id = 0, face = 0, level = 0, rtw = 0, rth = 0;
+    if (rt_obj == d->back_buffer) {
+      kind = 1;
+      if (d->back_buffer) rtw = d->back_buffer->width, rth = d->back_buffer->height;
+    } else if (auto* s = dynamic_cast<Surface8*>(rt_obj)) {
+      rtw = s->width;
+      rth = s->height;
+      if (s->gl_tex) {
+        kind = 2;
+        id = s->gl_tex;
+      } else if (s->gl_rb) {
+        kind = 3;
+        id = s->gl_rb;
+      }
+    } else if (auto* ts = dynamic_cast<TextureLevelSurface8*>(rt_obj)) {
+      if (ts->tex && ts->level < ts->tex->levels) {
+        kind = 2;
+        id = ts->tex->gl_tex;
+        face = ts->face;
+        level = ts->level;
+        size_t idx = ts->tex->slot_index(face, level);
+        rtw = ts->tex->level[idx].w;
+        rth = ts->tex->level[idx].h;
+      }
     }
-  } else if (auto* ts = dynamic_cast<TextureLevelSurface8*>(rt_obj)) {
-    if (ts->tex && ts->level < ts->tex->levels) {
-      kind = 2;
-      id = ts->tex->gl_tex;
-      face = ts->face;
-      level = ts->level;
-      size_t idx = ts->tex->slot_index(face, level);
-      rtw = ts->tex->level[idx].w;
-      rth = ts->tex->level[idx].h;
-    }
+    rec().op(cmd::OpSetRenderTarget, {0, kind, id, face, level});
+    if (rtw && rth) set_viewport(d, d3d::Viewport{0, 0, rtw, rth, 0.0f, 1.0f});
   }
-  rec().op(cmd::OpSetRenderTarget, {0, kind, id, face, level});
   if (zs) {
     zs->refs++;
     d->depth_stencil = zs;
     if (zs->gl_rb) rec().op(cmd::OpSetDepthStencil, {3u, zs->gl_rb});
+  } else {
+    d->depth_stencil = nullptr;
+    rec().op(cmd::OpSetDepthStencil, {0u, 0u});
   }
-  if (rt_obj && rtw && rth) set_viewport(d, d3d::Viewport{0, 0, rtw, rth, 0.0f, 1.0f});
   return S_OK;
 }
 
@@ -1095,6 +1100,9 @@ uint32_t CreateAdditionalSwapChain(Cpu* c, ComObject* self) {
   if (!w) w = d->pp[0];
   if (!h) h = d->pp[1];
   if (!fmt) fmt = d->pp[2];
+  st32(pp, w);
+  st32(pp + 4, h);
+  st32(pp + 8, fmt);
   auto* sc = new SwapChain8();
   sc->device = d;
   sc->back_buffer = new Surface8();
@@ -1104,6 +1112,8 @@ uint32_t CreateAdditionalSwapChain(Cpu* c, ComObject* self) {
   sc->back_buffer->format = fmt;
   sc->back_buffer->usage = d3d::USAGE_RENDERTARGET;
   sc->back_buffer->pool = d3d::POOL_DEFAULT;
+  sc->back_buffer->gl_tex = new_gl_id();
+  rec().op(cmd::OpCreateTexture, {sc->back_buffer->gl_tex, 0u, w, h, 1u, fmt, 1u});
   com_wrap(sc->back_buffer, iface_d3d8_surface());
   st32(out, com_wrap(sc, iface_d3d8_swap_chain()));
   return S_OK;
@@ -1385,7 +1395,7 @@ void fill_device_caps(uint32_t p) {
   st32(p + 0, 1);
   st32(p + 4, 0);
   st32(p + 8, 0x00020000);
-  st32(p + 12, 0x20000000 | 0x00000020);
+  st32(p + 12, 0x20000000 | 0x00080000 | 0x00020000 | 0x00000020);
   st32(p + 16, 0x00000080);
   st32(p + 20, 0x80000000 | 0x0000000f);
   st32(p + 24, 0x00000001);

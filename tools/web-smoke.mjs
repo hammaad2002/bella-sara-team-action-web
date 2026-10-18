@@ -15,7 +15,10 @@ const opt = (name, dflt) => {
   return i >= 0 ? args[i + 1] : dflt;
 };
 const seconds = Number(opt("seconds", "120"));
+const minFrames = Number(opt("min-frames", "0"));
 const query = opt("query", "devIso&autoplay");
+const capMatch = /(?:^|&)capture=([0-9,]+)/.exec(query);
+const expectedCaps = capMatch ? capMatch[1].split(",").filter(Boolean) : [];
 const port = opt("port", "5174");
 const url = `http://localhost:${port}/?${query}`;
 const outDir = "work/web-frames";
@@ -82,6 +85,11 @@ while (Date.now() < deadline) {
     writeFileSync(`${outDir}/frame_${String(k).padStart(5, "0")}.png`, Buffer.from(data.split(",")[1], "base64"));
     saved.add(k);
     console.log(`${stamp()} saved ${outDir}/frame_${String(k).padStart(5, "0")}.png`);
+  }
+  const focusTestPending = (blurAt >= 0 && !blurred) || (focusAt >= 0 && !focused);
+  if (!focusTestPending) {
+    if (expectedCaps.length > 0 && expectedCaps.every((k) => saved.has(k)) && s.frames >= minFrames) break;
+    else if (expectedCaps.length === 0 && minFrames > 0 && s.frames >= minFrames) break;
   }
   if (s.state === "error") break;
 }

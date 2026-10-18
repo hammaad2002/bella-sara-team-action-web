@@ -181,52 +181,6 @@ Program build_program(const ProgKey& k) {
 GLuint g_vao = 0, g_up_vbo = 0, g_up_ibo = 0;
 uint32_t g_enabled_attribs = 0;
 
-// ---- Samplers ----------------------------------------------------------------------------------
-
-std::unordered_map<uint64_t, GLuint> g_samplers;
-
-GLenum gl_address(uint32_t a) {
-  switch (a) {
-    case 2: return GL_MIRRORED_REPEAT;
-    case 3: case 4: return GL_CLAMP_TO_EDGE;  // BORDER is not available in GLES 3.0
-    case 5: return GL_MIRRORED_REPEAT;
-    default: return GL_REPEAT;
-  }
-}
-
-GLuint sampler_for(uint32_t stage, bool mipmapped) {
-  const auto& ss = g.st.ss[stage];
-  const auto& ts = g.st.tss[stage];
-  // D3D8 has no SetSamplerState; address/filter live in texture stage state (D3DTSS_*).
-  // Prefer stage-state address/filter (D3D8); fall back to D3D9-style sampler state.
-  uint32_t wrap_u = ts[13] ? ts[13] : (ss[1] ? ss[1] : 1u);
-  uint32_t wrap_v = ts[14] ? ts[14] : (ss[2] ? ss[2] : 1u);
-  uint32_t wrap_w = ts[15] ? ts[15] : (ss[3] ? ss[3] : 1u);
-  uint32_t mag = ts[17] ? ts[17] : (ss[5] ? ss[5] : 2u);
-  uint32_t min = ts[16] ? ts[16] : (ss[6] ? ss[6] : 2u);
-  uint32_t mip = mipmapped ? (ts[18] ? ts[18] : ss[7]) : 0;
-  uint64_t key = (uint64_t)wrap_u | (uint64_t)wrap_v << 4 | (uint64_t)wrap_w << 8 | (uint64_t)mag << 12 | (uint64_t)min << 16 |
-                 (uint64_t)mip << 20 | (uint64_t)std::min<uint32_t>(ss[9], 15) << 24 | (uint64_t)std::min<uint32_t>(ss[10], 16) << 28;
-  auto it = g_samplers.find(key);
-  if (it != g_samplers.end()) return it->second;
-  GLuint s;
-  glGenSamplers(1, &s);
-  glSamplerParameteri(s, GL_TEXTURE_WRAP_S, (GLint)gl_address(wrap_u));
-  glSamplerParameteri(s, GL_TEXTURE_WRAP_T, (GLint)gl_address(wrap_v));
-  glSamplerParameteri(s, GL_TEXTURE_WRAP_R, (GLint)gl_address(wrap_w));
-  bool mag_lin = mag >= 2, min_lin = min >= 2;
-  glSamplerParameteri(s, GL_TEXTURE_MAG_FILTER, mag_lin ? GL_LINEAR : GL_NEAREST);
-  GLenum mf;
-  if (mip == 0) mf = min_lin ? GL_LINEAR : GL_NEAREST;
-  else if (mip == 1) mf = min_lin ? GL_LINEAR_MIPMAP_NEAREST : GL_NEAREST_MIPMAP_NEAREST;
-  else mf = min_lin ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR;
-  glSamplerParameteri(s, GL_TEXTURE_MIN_FILTER, (GLint)mf);
-  glSamplerParameterf(s, GL_TEXTURE_MIN_LOD, (float)ss[9]);
-  if (min == 3 || mag == 3) glSamplerParameterf(s, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY_EXT */, (float)std::max<uint32_t>(ss[10], 1));
-  g_samplers[key] = s;
-  return s;
-}
-
 // ---- GL state cache ---------------------------------------------------------------------------
 
 struct GlState {
@@ -696,16 +650,7 @@ void upload_uniforms(const Program& p, const ProgKey& k) {
   if (k.ps_id && p.u_pc >= 0 && p.nconst_pc) glUniform4fv(p.u_pc, (GLsizei)p.nconst_pc, g.st.ps_f.data());
 }
 
-void bind_textures(const ProgKey& k) {
-  for (int i = 0; i < k.nstages; i++) {
-    if (!k.tex_kind[i]) continue;
-    auto it = g.tex.find(g.textures[i]);
-    if (it == g.tex.end()) continue;
-    glActiveTexture(GL_TEXTURE0 + (GLenum)i);
-    glBindTexture(it->second.target, it->second.gl);
-    glBindSampler((GLuint)i, sampler_for((uint32_t)i, it->second.levels > 1));
-  }
-}
+void bind_textures(const ProgKey& k) { bind_texture_units(k.nstages, k.tex_kind); }
 
 GLenum gl_prim(uint32_t p) {
   switch (p) {
@@ -730,6 +675,54 @@ uint32_t prim_vertices(uint32_t prim, uint32_t n) {
 }
 
 }  // namespace
+
+namespace {
+
+std::unordered_map<uint64_t, GLuint> g_samplers;
+
+GLenum gl_address(uint32_t a) {
+  switch (a) {
+    case 2: return GL_MIRRORED_REPEAT;
+    case 3: case 4: return GL_CLAMP_TO_EDGE;  // BORDER is not available in GLES 3.0
+    case 5: return GL_MIRRORED_REPEAT;
+    default: return GL_REPEAT;
+  }
+}
+
+}  // namespace
+
+GLuint sampler_for_texture_stage(uint32_t stage, bool mipmapped) {
+  const auto& ss = g.st.ss[stage];
+  const auto& ts = g.st.tss[stage];
+  // D3D8 has no SetSamplerState; address/filter live in texture stage state (D3DTSS_*).
+  // Prefer stage-state address/filter (D3D8); fall back to D3D9-style sampler state.
+  uint32_t wrap_u = ts[13] ? ts[13] : (ss[1] ? ss[1] : 1u);
+  uint32_t wrap_v = ts[14] ? ts[14] : (ss[2] ? ss[2] : 1u);
+  uint32_t wrap_w = ts[15] ? ts[15] : (ss[3] ? ss[3] : 1u);
+  uint32_t mag = ts[17] ? ts[17] : (ss[5] ? ss[5] : 2u);
+  uint32_t min = ts[16] ? ts[16] : (ss[6] ? ss[6] : 2u);
+  uint32_t mip = mipmapped ? (ts[18] ? ts[18] : ss[7]) : 0;
+  uint64_t key = (uint64_t)wrap_u | (uint64_t)wrap_v << 4 | (uint64_t)wrap_w << 8 | (uint64_t)mag << 12 | (uint64_t)min << 16 |
+                 (uint64_t)mip << 20 | (uint64_t)std::min<uint32_t>(ss[9], 15) << 24 | (uint64_t)std::min<uint32_t>(ss[10], 16) << 28;
+  auto it = g_samplers.find(key);
+  if (it != g_samplers.end()) return it->second;
+  GLuint s;
+  glGenSamplers(1, &s);
+  glSamplerParameteri(s, GL_TEXTURE_WRAP_S, (GLint)gl_address(wrap_u));
+  glSamplerParameteri(s, GL_TEXTURE_WRAP_T, (GLint)gl_address(wrap_v));
+  glSamplerParameteri(s, GL_TEXTURE_WRAP_R, (GLint)gl_address(wrap_w));
+  bool mag_lin = mag >= 2, min_lin = min >= 2;
+  glSamplerParameteri(s, GL_TEXTURE_MAG_FILTER, mag_lin ? GL_LINEAR : GL_NEAREST);
+  GLenum mf;
+  if (mip == 0) mf = min_lin ? GL_LINEAR : GL_NEAREST;
+  else if (mip == 1) mf = min_lin ? GL_LINEAR_MIPMAP_NEAREST : GL_NEAREST_MIPMAP_NEAREST;
+  else mf = min_lin ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR;
+  glSamplerParameteri(s, GL_TEXTURE_MIN_FILTER, (GLint)mf);
+  glSamplerParameterf(s, GL_TEXTURE_MIN_LOD, (float)ss[9]);
+  if (min == 3 || mag == 3) glSamplerParameterf(s, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY_EXT */, (float)std::max<uint32_t>(ss[10], 1));
+  g_samplers[key] = s;
+  return s;
+}
 
 void renderer_init() {
   glGenVertexArrays(1, &g_vao);

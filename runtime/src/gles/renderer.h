@@ -88,6 +88,9 @@ void target_size(const Target& t, uint32_t* w, uint32_t* h);
 void bind_render_target();
 
 void renderer_init();
+// Bind texture units for a draw (breaks render-target / sampler feedback loops on WebGL2).
+void bind_texture_units(uint8_t nstages, const uint8_t tex_kind[8]);
+GLuint sampler_for_texture_stage(uint32_t stage, bool mipmapped);
 // One D3D draw call. For *UP draws, `up_*` carry the inline vertex/index data.
 void draw(uint32_t prim, uint32_t start, uint32_t count, bool indexed, int32_t base_vertex, uint32_t min_index, uint32_t num_vertices,
           uint32_t up_stride, const uint8_t* up_vdata, uint32_t up_vbytes, const uint8_t* up_idata, uint32_t up_ibytes, uint32_t up_ibits);
