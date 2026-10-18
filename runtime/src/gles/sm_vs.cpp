@@ -99,6 +99,8 @@ struct Translator {
       case 6: return "(1.0 - " + r + ")";
       case 7: return "(" + r + " * 2.0)";
       case 8: return "(-(" + r + " * 2.0))";
+      case 9: return "(" + r + " * 0.5)";
+      case 10: return "(" + r + " * 4.0)";
       case 11: return "abs(" + r + ")";
       case 12: return "(-abs(" + r + "))";
       default: err = "unsupported source modifier"; return r;

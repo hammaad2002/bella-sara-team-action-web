@@ -135,6 +135,8 @@ struct Translator {
       case 6: return "(1.0 - " + r + ")";            // _comp
       case 7: return "(" + r + " * 2.0)";            // _x2
       case 8: return "(-(" + r + " * 2.0))";         // -_x2
+      case 9: return "(" + r + " * 0.5)";            // _d2
+      case 10: return "(" + r + " * 4.0)";           // _x4
       default: err = "unsupported source modifier"; return r;
     }
   }
@@ -210,8 +212,8 @@ struct Translator {
       return false;
     }
     uint32_t major = (t[0] >> 8) & 0xff, minor = t[0] & 0xff;
-    if (major != 1 || minor != 1) {
-      err = "only ps_1_1 is supported, got ps." + std::to_string(major) + "." + std::to_string(minor);
+    if (major != 1 || minor > 1) {
+      err = "only ps_1_0/ps_1_1 is supported, got ps." + std::to_string(major) + "." + std::to_string(minor);
       return false;
     }
     size_t i = 1;
@@ -227,7 +229,7 @@ struct Translator {
         err = "phase markers only exist in ps_1_4+";
         break;
       }
-      if (tok >> 16) {
+      if ((tok >> 16) & 0xbfff) {
         char hex[12];
         snprintf(hex, sizeof hex, "0x%x", tok >> 16);
         err = std::string("unexpected opcode flag bits ") + hex;
