@@ -19,6 +19,7 @@ namespace {
 SDL_Window* g_window = nullptr;
 uint8_t g_keys[256];
 MouseState g_mouse{};
+int32_t g_mouse_x = 0, g_mouse_y = 0;
 std::mutex g_mouse_mutex;
 
 struct KeyMap {
@@ -230,6 +231,8 @@ void poll_events(std::vector<InputEvent>& out) {
         std::lock_guard<std::mutex> lock(g_mouse_mutex);
         g_mouse.dx += e.motion.xrel;
         g_mouse.dy += e.motion.yrel;
+        g_mouse_x = e.motion.x;
+        g_mouse_y = e.motion.y;
         ev.kind = InputEvent::MouseMove;
         ev.x = e.motion.x;
         ev.y = e.motion.y;
@@ -243,6 +246,8 @@ void poll_events(std::vector<InputEvent>& out) {
         {
           std::lock_guard<std::mutex> lock(g_mouse_mutex);
           g_mouse.buttons[b] = down ? 0x80 : 0;
+          g_mouse_x = e.button.x;
+          g_mouse_y = e.button.y;
         }
         ev.kind = down ? InputEvent::MouseDown : InputEvent::MouseUp;
         ev.button = b;
@@ -284,9 +289,57 @@ struct ScriptedKey {
   uint32_t hold;
   bool down_sent = false, up_sent = false;
 };
+struct ScriptedMouse {
+  uint64_t frame;
+  enum Kind { Move, ClickLeft, ClickRight } kind;
+  int x = 0, y = 0;
+  uint32_t hold = 5;
+  bool started = false, down_sent = false, up_sent = false;
+};
 std::vector<ScriptedKey> g_script;
+std::vector<ScriptedMouse> g_mouse_script;
 std::atomic<uint64_t> g_frame{0};
 bool g_script_parsed = false;
+
+bool parse_xy(const std::string& tail, int* x, int* y) {
+  size_t comma = tail.find(',');
+  if (comma == std::string::npos) return false;
+  *x = atoi(tail.c_str());
+  *y = atoi(tail.c_str() + comma + 1);
+  return true;
+}
+
+bool parse_mouse_action(const std::string& action, ScriptedMouse* out) {
+  uint32_t hold = out->hold;
+  size_t plus = action.find('+');
+  std::string stem = plus == std::string::npos ? action : action.substr(0, plus);
+  if (plus != std::string::npos) hold = (uint32_t)atoi(action.c_str() + plus + 1);
+  if (stem.rfind("move:", 0) == 0) {
+    out->kind = ScriptedMouse::Move;
+    if (!parse_xy(stem.substr(5), &out->x, &out->y)) return false;
+    out->hold = 1;
+    return true;
+  }
+  if (stem.rfind("lclick:", 0) == 0) {
+    out->kind = ScriptedMouse::ClickLeft;
+    if (!parse_xy(stem.substr(7), &out->x, &out->y)) return false;
+    out->hold = hold;
+    return true;
+  }
+  if (stem.rfind("rclick:", 0) == 0) {
+    out->kind = ScriptedMouse::ClickRight;
+    if (!parse_xy(stem.substr(7), &out->x, &out->y)) return false;
+    out->hold = hold;
+    return true;
+  }
+  if (stem.rfind("click:", 0) == 0) {
+    out->kind = ScriptedMouse::ClickLeft;
+    if (!parse_xy(stem.substr(6), &out->x, &out->y)) return false;
+    out->hold = hold;
+    return true;
+  }
+  return false;
+}
 
 void parse_script() {
   g_script_parsed = true;
@@ -298,25 +351,95 @@ void parse_script() {
     size_t end = s.find(',', pos);
     std::string item = s.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
     pos = end == std::string::npos ? s.size() : end + 1;
-    size_t colon = item.find(':');
-    if (colon == std::string::npos) continue;
-    ScriptedKey k{};
-    k.frame = strtoull(item.c_str(), nullptr, 10);
-    std::string key = item.substr(colon + 1);
-    k.hold = 4;
-    size_t plus = key.find('+');
-    if (plus != std::string::npos) {
-      k.hold = (uint32_t)atoi(key.c_str() + plus + 1);
-      key = key.substr(0, plus);
+    uint64_t frame = 0;
+    std::string action;
+    size_t at = item.find('@');
+    if (at != std::string::npos) {
+      frame = strtoull(item.c_str() + at + 1, nullptr, 10);
+      action = item.substr(0, at);
+    } else {
+      size_t colon = item.find(':');
+      if (colon == std::string::npos) continue;
+      frame = strtoull(item.c_str(), nullptr, 10);
+      action = item.substr(colon + 1);
     }
-    k.sc = SDL_GetScancodeFromName(key.c_str());
-    if (k.sc == SDL_SCANCODE_UNKNOWN) rt::log(rt::Log::Warn, "BELLA_INPUT: unknown key '%s'", key.c_str());
+    ScriptedMouse m{};
+    m.frame = frame;
+    if (parse_mouse_action(action, &m)) {
+      g_mouse_script.push_back(m);
+      continue;
+    }
+    ScriptedKey k{};
+    k.frame = frame;
+    k.hold = 4;
+    size_t plus = action.find('+');
+    if (plus != std::string::npos) {
+      k.hold = (uint32_t)atoi(action.c_str() + plus + 1);
+      action = action.substr(0, plus);
+    }
+    k.sc = SDL_GetScancodeFromName(action.c_str());
+    if (k.sc == SDL_SCANCODE_UNKNOWN) rt::log(rt::Log::Warn, "BELLA_INPUT: unknown key '%s'", action.c_str());
     else g_script.push_back(k);
+  }
+}
+
+void apply_scripted_mouse_pos(int x, int y, std::vector<InputEvent>& out) {
+  std::lock_guard<std::mutex> lock(g_mouse_mutex);
+  g_mouse.dx += x - g_mouse_x;
+  g_mouse.dy += y - g_mouse_y;
+  g_mouse_x = x;
+  g_mouse_y = y;
+  if (g_window) SDL_WarpMouseInWindow(g_window, x, y);
+  InputEvent ev{};
+  ev.kind = InputEvent::MouseMove;
+  ev.x = x;
+  ev.y = y;
+  out.push_back(ev);
+}
+
+void scripted_mouse(std::vector<InputEvent>& out) {
+  uint64_t f = g_frame.load();
+  for (auto& m : g_mouse_script) {
+    if (!m.started && f >= m.frame) {
+      m.started = true;
+      apply_scripted_mouse_pos(m.x, m.y, out);
+      if (m.kind != ScriptedMouse::Move) {
+        uint32_t b = m.kind == ScriptedMouse::ClickRight ? 1u : 0u;
+        {
+          std::lock_guard<std::mutex> lock(g_mouse_mutex);
+          g_mouse.buttons[b] = 0x80;
+        }
+        InputEvent ev{};
+        ev.kind = InputEvent::MouseDown;
+        ev.button = b;
+        ev.x = m.x;
+        ev.y = m.y;
+        out.push_back(ev);
+        m.down_sent = true;
+      }
+      rt::log(rt::Log::Info, "scripted input: %s %d,%d at frame %llu",
+              m.kind == ScriptedMouse::Move ? "move" : m.kind == ScriptedMouse::ClickRight ? "rclick" : "click", m.x, m.y,
+              (unsigned long long)f);
+    } else if (m.down_sent && !m.up_sent && f >= m.frame + m.hold) {
+      m.up_sent = true;
+      uint32_t b = m.kind == ScriptedMouse::ClickRight ? 1u : 0u;
+      {
+        std::lock_guard<std::mutex> lock(g_mouse_mutex);
+        g_mouse.buttons[b] = 0;
+      }
+      InputEvent ev{};
+      ev.kind = InputEvent::MouseUp;
+      ev.button = b;
+      ev.x = m.x;
+      ev.y = m.y;
+      out.push_back(ev);
+    }
   }
 }
 
 void scripted_events(std::vector<InputEvent>& out) {
   if (!g_script_parsed) parse_script();
+  scripted_mouse(out);
   uint64_t f = g_frame.load();
   for (auto& k : g_script) {
     const KeyMap* m = lookup(k.sc);
@@ -487,6 +610,27 @@ MouseState take_mouse_state() {
   MouseState m = g_mouse;
   g_mouse.dx = g_mouse.dy = g_mouse.wheel = 0;
   return m;
+}
+
+void mouse_pos(int* x, int* y) {
+  std::lock_guard<std::mutex> lock(g_mouse_mutex);
+  if (x) *x = g_mouse_x;
+  if (y) *y = g_mouse_y;
+}
+
+void set_mouse_pos(int x, int y) {
+  std::lock_guard<std::mutex> lock(g_mouse_mutex);
+  g_mouse.dx += x - g_mouse_x;
+  g_mouse.dy += y - g_mouse_y;
+  g_mouse_x = x;
+  g_mouse_y = y;
+  if (g_window) SDL_WarpMouseInWindow(g_window, x, y);
+}
+
+bool mouse_button_down(int button) {
+  if (button < 0 || button >= 4) return false;
+  std::lock_guard<std::mutex> lock(g_mouse_mutex);
+  return (g_mouse.buttons[button] & 0x80) != 0;
 }
 
 }  // namespace plat
