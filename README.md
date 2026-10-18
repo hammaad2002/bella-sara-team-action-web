@@ -8,8 +8,8 @@ translates the game's x86 program to WebAssembly on the player's own machine. Th
 runs on a re-implementation of the Windows, Direct3D 8, DirectInput 8 and FMOD interfaces the game
 uses.
 
-**Status:** port in progress — the plan and milestone exit criteria are in `docs/PLAN.md`, the
-port's working log in `docs/JOURNAL.md`. Nothing playable yet.
+See `docs/PLAN.md` for the architecture and milestone criteria, and `docs/JOURNAL.md` for the
+port's engineering log.
 
 Not affiliated with or endorsed by Codemasters or Hidden City Games.
 
@@ -54,4 +54,4 @@ node installer/src/cli.ts "Bella Sara.iso" work/install
 The code in this repository is under the MIT license (`LICENSE`). The engine statically links
 FFmpeg (LGPL 2.1 or later) and uses iced-x86 (MIT), Emscripten (MIT), dlmalloc (MIT-0) and
 Khronos headers (MIT). The framework is forked from the author's MIT-licensed
-`bellasara-team-action-web`.
+`shrek2-team-action-web`.

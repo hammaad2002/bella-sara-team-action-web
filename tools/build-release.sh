@@ -28,8 +28,7 @@ ISO="${BELLA_ISO:-$ROOT/Bella Sara.iso}"
 echo "== shared bytes with the game"
 node "$ROOT/tools/scan-dist.mjs" "$DIST" "$ROOT/work/install" "$ISO" \
   --allow "$FFMPEG_WEB/lib/libavcodec.a" --allow "$ROOT/node_modules/iced-x86/iced_x86_bg.wasm" \
-  --allow "$ROOT/tools/scan-allow/mit-license.txt" \
-  --allow "$ROOT/work/install/fmod.dll"
+  --allow "$ROOT/tools/scan-allow/mit-license.txt"
 
 echo "== um publish check (site)"
 "$UM" publish check "$DIST" --game "$ROOT/work/install"
