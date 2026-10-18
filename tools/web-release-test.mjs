@@ -2,7 +2,7 @@
 // End-to-end check of a deployed (or `vite preview`ed) production build, as a first-time player:
 // fresh browser profile, disc image chosen through the page's file picker, install, the controls
 // list on first Play, translation, and play to the main menu.
-//   node tools/web-release-test.mjs <url> [--iso SHRK2TMA_1.iso] [--saves backup.zip] [--browser chrome|firefox|webkit] [--frames 3500]
+//   node tools/web-release-test.mjs <url> [--iso Bella Sara.iso] [--saves backup.zip] [--browser chrome|firefox|webkit] [--frames 300]
 import { rmSync, writeFileSync } from "node:fs";
 import { browserArgs, launch } from "./browsers.mjs";
 
@@ -16,8 +16,8 @@ if (!url || url.startsWith("--")) {
   console.error("usage: node tools/web-release-test.mjs <url> [--iso path] [--browser chrome|firefox|webkit]");
   process.exit(2);
 }
-const iso = opt("iso", "SHRK2TMA_1.iso");
-const want = Number(opt("frames", "3500"));
+const iso = opt("iso", "Bella Sara.iso");
+const want = Number(opt("frames", "300"));
 const saves = opt("saves", "");
 const { browser } = browserArgs(args);
 const profile = `work/${browser}-profile-release-test`;
@@ -38,13 +38,13 @@ page.on("pageerror", (e) => errors.push(e.message));
 const response = await page.goto(url);
 const headers = response.headers();
 check(headers["cross-origin-opener-policy"] === "same-origin" && headers["cross-origin-embedder-policy"] === "require-corp", "cross-origin isolation headers", `${headers["cross-origin-opener-policy"]} / ${headers["cross-origin-embedder-policy"]}`);
-await page.waitForFunction(() => window.__shrek2?.state === "need-install", null, { timeout: 60_000 });
+await page.waitForFunction(() => window.__bella?.state === "need-install", null, { timeout: 60_000 });
 check(await page.evaluate(() => crossOriginIsolated), "page is cross-origin isolated");
 check(/Not affiliated/.test(await page.locator("footer").innerText()), "notice shown", await page.locator("footer").innerText());
 
 await page.setInputFiles("#iso", iso);
-await page.waitForFunction(() => ["ready", "error"].includes(window.__shrek2.state), null, { timeout: 900_000, polling: 2000 });
-check((await page.evaluate(() => window.__shrek2.state)) === "ready", "installed from the chosen disc image", `${secs()} s; ${await page.locator("#log").innerText()}`);
+await page.waitForFunction(() => ["ready", "error"].includes(window.__bella.state), null, { timeout: 900_000, polling: 2000 });
+check((await page.evaluate(() => window.__bella.state)) === "ready", "installed from the chosen disc image", `${secs()} s; ${await page.locator("#log").innerText()}`);
 
 if (saves) {
   await page.setInputFiles("#save-import", saves);
@@ -56,8 +56,8 @@ await page.click("#play");
 await page.locator("#help").waitFor({ state: "visible" });
 check((await page.locator("#help-close").innerText()) === "Play", "controls list before the first start");
 await page.click("#help-close");
-await page.waitForFunction((n) => window.__shrek2.state === "error" || window.__shrek2.frames >= n, want, { timeout: 900_000, polling: 2000 });
-const s = await page.evaluate(() => ({ state: window.__shrek2.state, frames: window.__shrek2.frames, log: document.getElementById("log").innerText }));
+await page.waitForFunction((n) => window.__bella.state === "error" || window.__bella.frames >= n, want, { timeout: 900_000, polling: 2000 });
+const s = await page.evaluate(() => ({ state: window.__bella.state, frames: window.__bella.frames, log: document.getElementById("log").innerText }));
 check(s.state === "running" && s.frames >= want, `translated and ran to frame ${want}`, `${secs()} s; ${s.log.split("\n").filter(Boolean).pop() ?? ""}`);
 // The controls list in game, twice: the game must keep running after each close.
 const after = [];
@@ -67,13 +67,13 @@ for (let i = 0; i < 2; i++) {
   await page.waitForTimeout(500);
   await page.keyboard.press("F1");
   await page.locator("#help").waitFor({ state: "hidden" });
-  const f0 = await page.evaluate(() => window.__shrek2.frames);
+  const f0 = await page.evaluate(() => window.__bella.frames);
   await page.waitForTimeout(2000);
-  after.push((await page.evaluate(() => window.__shrek2.frames)) - f0);
+  after.push((await page.evaluate(() => window.__bella.frames)) - f0);
 }
 check(after.every((n) => n > 20), "F1 controls list pauses and resumes the game", `frames in 2 s after each close: ${after.join(", ")}`);
 await page.screenshot({ path: `work/release-test-${browser}.png` });
-const engineLog = await page.evaluate(() => window.__shrek2.log.join("\n"));
+const engineLog = await page.evaluate(() => window.__bella.log.join("\n"));
 writeFileSync(`work/release-test-${browser}.log`, engineLog);
 check(!/\[(fatal|error)\]/.test(engineLog), "no engine errors", (engineLog.match(/.*\[(fatal|error)\].*/g) ?? []).slice(0, 3).join(" | "));
 check(errors.length === 0, "no console errors", errors.slice(0, 3).join(" | "));
