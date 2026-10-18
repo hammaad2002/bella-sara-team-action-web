@@ -20,7 +20,7 @@ std::vector<uint32_t> g_funcs;
 
 extern "C" {
 
-void rt_dispatch_ext(Cpu* c, uint32_t target);
+void rt_dispatch(Cpu* c, uint32_t target);
 void rt_trap_id(Cpu* c, uint32_t id);
 
 // The page hands over the translated module before callMain().
@@ -45,7 +45,7 @@ EMSCRIPTEN_KEEPALIVE void web_game_register(const uint32_t* addrs, uint32_t coun
 // the toolchain names exports). Order matches RUNTIME_IMPORTS in recomp/src/emit-wasm.ts.
 EMSCRIPTEN_KEEPALIVE uint32_t web_game_import(uint32_t i) {
   static const uintptr_t fns[] = {
-      (uintptr_t)&rt_hle,      (uintptr_t)&rt_dispatch_ext, (uintptr_t)&rt_trap_id, (uintptr_t)&rt_cpuid,
+      (uintptr_t)&rt_hle,      (uintptr_t)&rt_dispatch, (uintptr_t)&rt_trap_id, (uintptr_t)&rt_cpuid,
       (uintptr_t)&rt_rep_movs, (uintptr_t)&rt_rep_stos,     (uintptr_t)&rt_rcl,     (uintptr_t)&rt_rcr,
       (uintptr_t)&rt_f80_load, (uintptr_t)&rt_f80_store,    (uintptr_t)&rt_fist16,  (uintptr_t)&rt_fist32,
       (uintptr_t)&rt_fist64,   (uintptr_t)&rt_frndint,      (uintptr_t)&rt_fxam,    (uintptr_t)&rt_sin,

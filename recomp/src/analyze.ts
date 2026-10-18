@@ -16,7 +16,7 @@ const ghidra = ghidraPath ? await loadGhidraHints(ghidraPath) : undefined;
 const useHints = ghidra && !args.includes("--no-hints");
 const t0 = performance.now();
 const prog = new Program(pe, useHints ? ghidra : { noreturn: ghidra?.noreturn });
-prog.discover();
+prog.discover({ speculate: true });
 const ms = performance.now() - t0;
 
 let blocks = 0, insns = 0, traps = 0, switches = 0, tails = 0, tailInd = 0, spec = 0, bad = 0;

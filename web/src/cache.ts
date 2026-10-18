@@ -5,8 +5,8 @@ export const INSTALL_DIR = "bella";
 /** Present in INSTALL_DIR while an install is in progress (or was interrupted). */
 export const INSTALLING_MARKER = ".installing";
 
-/** Ghidra entry hints merged into metadata before translate (see translate-worker.ts). */
-export const TRANSLATE_ENTRY_HINTS = "gh-spec1";
+/** Bumped when shipped metadata / translation inputs change (invalidates OPFS game wasm cache). */
+export const TRANSLATE_ENTRY_HINTS = "meta2";
 
 /** Cached in-browser translation of a given BellaSara.exe (by SHA-256) for this translator version. */
 export function cacheName(sha: string): string {
