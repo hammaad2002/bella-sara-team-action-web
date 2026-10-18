@@ -10,8 +10,8 @@ struct Method {
 
 inline constexpr Method kIDirect3D8[] = {
     {"QueryInterface", 2}, {"AddRef", 0}, {"Release", 0}, {"RegisterSoftwareDevice", 1}, {"GetAdapterCount", 0},
-    {"GetAdapterIdentifier", 3}, {"GetAdapterModeCount", 2}, {"EnumAdapterModes", 4}, {"GetAdapterDisplayMode", 2},
-    {"CheckDeviceType", 5}, {"CheckDeviceFormat", 6}, {"CheckDeviceMultiSampleType", 6}, {"CheckDepthStencilMatch", 5},
+    {"GetAdapterIdentifier", 3}, {"GetAdapterModeCount", 1}, {"EnumAdapterModes", 3}, {"GetAdapterDisplayMode", 2},
+    {"CheckDeviceType", 5}, {"CheckDeviceFormat", 6}, {"CheckDeviceMultiSampleType", 5}, {"CheckDepthStencilMatch", 5},
     {"GetDeviceCaps", 3}, {"GetAdapterMonitor", 1}, {"CreateDevice", 6},
 };
 
