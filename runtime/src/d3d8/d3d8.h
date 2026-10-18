@@ -19,6 +19,8 @@ rt::ComInterface& iface_d3d8();
 rt::ComInterface& iface_d3d8_device();
 rt::ComInterface& iface_d3d8_surface();
 rt::ComInterface& iface_d3d8_texture();
+rt::ComInterface& iface_d3d8_cube_texture();
+rt::ComInterface& iface_d3d8_swap_chain();
 rt::ComInterface& iface_d3d8_vertex_buffer();
 rt::ComInterface& iface_d3d8_index_buffer();
 rt::ComInterface& iface_d3d8_state_block();
@@ -34,8 +36,20 @@ struct Texture8 : public rt::ComObject {
   const char* type_name() const override { return "D3D8Texture"; }
   uint32_t width = 0, height = 0, levels = 1, usage = 0, format = 0, pool = 0;
   uint32_t gl_tex = 0;
+  bool is_cube = false;
   std::vector<TexLevel> level;
   std::vector<uint32_t> level_surface;
+  size_t slot_index(uint32_t face, uint32_t lv) const { return (is_cube ? (size_t)face * levels : 0) + lv; }
+};
+
+struct TextureLevelSurface8 : public rt::ComObject {
+  const char* type_name() const override { return "D3D8TextureSurface"; }
+  Texture8* tex = nullptr;
+  uint32_t face = 0;
+  uint32_t level = 0;
+  ~TextureLevelSurface8() override {
+    if (tex && tex->refs > 0) tex->refs--;
+  }
 };
 
 struct VertexBuffer8 : public rt::ComObject {
@@ -89,6 +103,7 @@ void capture_state_block8(StateBlock8* sb);
 void texture_ensure_mem(Texture8* t, uint32_t level);
 void texture_copy_levels(Texture8* src, Texture8* dst);
 void texture_flush_dirty(Texture8* t);
+void upload_tex_face_level(Texture8* t, uint32_t face, uint32_t level);
 // Guest IDirect3DSurface8 pointer for a host surface (D3D8 vtable order).
 uint32_t expose_d3d8_surface(rt::ComObject* surface);
 uint32_t expose_d3d8_texture(rt::ComObject* texture);
@@ -98,6 +113,8 @@ void fill_device_caps(uint32_t p);
 uint32_t create_d3d8_device(Cpu* c, rt::ComObject* d3d8);
 Texture8* create_texture8(uint32_t w, uint32_t h, uint32_t levels, uint32_t usage, uint32_t fmt, uint32_t pool,
                             uint32_t gl_tex);
+Texture8* create_cube_texture8(uint32_t edge, uint32_t levels, uint32_t usage, uint32_t fmt, uint32_t pool,
+                               uint32_t gl_tex);
 VertexBuffer8* create_vertex_buffer8(uint32_t length, uint32_t usage, uint32_t fvf, uint32_t pool, uint32_t gl_buf,
                                      uint32_t mem);
 IndexBuffer8* create_index_buffer8(uint32_t length, uint32_t usage, uint32_t format, uint32_t pool, uint32_t gl_buf,
@@ -107,6 +124,7 @@ uint32_t guest_vertex_buffer_gl(uint32_t guest_ptr);
 uint32_t guest_index_buffer_gl(uint32_t guest_ptr);
 uint32_t guest_shader_program(uint32_t guest_handle, bool pixel);
 uint32_t wrap_texture8(Texture8* t);
+uint32_t wrap_cube_texture8(Texture8* t);
 uint32_t wrap_vertex_buffer8(VertexBuffer8* vb);
 uint32_t wrap_index_buffer8(IndexBuffer8* ib);
 uint32_t wrap_shader8(Shader8* s);

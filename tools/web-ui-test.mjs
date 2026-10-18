@@ -192,7 +192,7 @@ if (!only || only === "view") {
 if (!only || only === "view") {
   const engineLog = await page.evaluate(() => window.__bella.log);
   writeFileSync(join(tmp, "engine.log"), engineLog.join("\n"));
-  const saveOpens = engineLog.filter((l) => /CreateFile\([^)]*Save[\\/]save\.bin/i.test(l));
+  const saveOpens = engineLog.filter((l) => /CreateFile\([^)]*(Save[\\/]|settings\.dat)/i.test(l));
   check(saveOpens.length > 0, "the game opens its save files", saveOpens.slice(0, 3).join(" | "));
 }
 

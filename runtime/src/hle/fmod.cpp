@@ -163,6 +163,8 @@ class FmodStream : public ComObject {
   const char* type_name() const override { return "FmodStream"; }
   std::vector<std::shared_ptr<FmodSample>> subs;
   std::vector<uint32_t> sentence;  // SetSubStreamSentence order (first entry plays by default)
+  std::shared_ptr<FmodSample> sentence_smp;  // concatenated subsongs when SetSubStreamSentence is used
+  int active_ch = -1;                        // channel currently playing this stream
   uint32_t mode = 0;               // FSOUND_Stream_SetMode
 };
 
@@ -508,9 +510,10 @@ int start_channel(const std::shared_ptr<FmodSample>& smp, int explicit_ch, bool 
     chan->max_dist = smp->max_dist;
     chan->is3d = false;  // FSOUND_3D_SetAttributes promotes; the header range still attenuates
     chan->pos3d = Vec3{};
+    const uint32_t total_frames = (uint32_t)(smp->pcm.size() / (smp->channels ? smp->channels : 1));
     chan->loop_start = smp->loop_start;
-    chan->loop_end = smp->loop_end;
-    chan->looping = smp->loop_end > smp->loop_start;
+    chan->loop_end = smp->loop_end > smp->loop_start ? smp->loop_end : total_frames;
+    chan->looping = (smp->loop_end > smp->loop_start) || ((smp->mode & (kLoopNormal | kLoopBidi)) != 0);
     chan->paused = paused_start;
     chan->playing = true;
   }
@@ -716,7 +719,12 @@ HLE_STDCALL_AS(kDll, FSOUND_GetPaused, "_FSOUND_GetPaused@4", 1) {
 HLE_STDCALL_AS(kDll, FSOUND_SetLoopMode, "_FSOUND_SetLoopMode@8", 2) {
   auto ch = (int)arg(c, 0) == kFreeChannel ? nullptr : channel_shared((int)arg(c, 0));
   if (!ch) return 0;
+  std::lock_guard<std::mutex> lock(ch->m);
   const uint32_t mode = arg(c, 1) & 7u;
+  if (ch->smp && ch->loop_end <= ch->loop_start) {
+    ch->loop_start = 0;
+    ch->loop_end = (uint32_t)(ch->smp->pcm.size() / (ch->smp->channels ? ch->smp->channels : 1));
+  }
   const bool points = ch->loop_end > ch->loop_start;
   ch->looping = mode == kLoopNormal || mode == kLoopBidi ? true
                 : mode == kLoopOff                      ? false
@@ -780,15 +788,15 @@ HLE_STDCALL_AS(kDll, FSOUND_Sample_SetMinMaxDistance, "_FSOUND_Sample_SetMinMaxD
   return 1;
 }
 
-// FSOUND_Sample_GetDefaults(sample, defvol, defpan, defpri, varvol[, varpan @20/5 args]): the
-// game passes one real out pointer and four 0s, so only non-null slots are written.
+// FSOUND_Sample_GetDefaults(sample, deffreq, defvol, defpan, defpri): the game at 0x0053e399 passes
+// &deffreq in arg(c, 1) and NULL for the other three, then divides Sample_GetLength by deffreq.
 HLE_STDCALL_AS(kDll, FSOUND_Sample_GetDefaults, "_FSOUND_Sample_GetDefaults@20", 5) {
   auto* smp = sample_by(arg(c, 0));
   if (!smp) return 0;
-  if (arg(c, 1)) st32(arg(c, 1), smp->def_vol);
-  if (arg(c, 2)) st32(arg(c, 2), smp->def_pan);
-  if (arg(c, 3)) st32(arg(c, 3), smp->def_pri);
-  if (arg(c, 4)) st32(arg(c, 4), 0);
+  if (arg(c, 1)) st32(arg(c, 1), smp->rate);
+  if (arg(c, 2)) st32(arg(c, 2), smp->def_vol);
+  if (arg(c, 3)) st32(arg(c, 3), smp->def_pan);
+  if (arg(c, 4)) st32(arg(c, 4), smp->def_pri);
   return 1;
 }
 
@@ -901,20 +909,41 @@ HLE_STDCALL_AS(kDll, FSOUND_Stream_PlayEx, "_FSOUND_Stream_PlayEx@16", 4) {
     set_error(kErrMemory);
     return (uint32_t)-1;
   }
-  uint32_t sub = 0;
-  if (!st->sentence.empty()) sub = std::min(st->sentence[0], (uint32_t)st->subs.size() - 1);
-  const int ch = start_channel(st->subs[sub], (int)arg(c, 1), arg(c, 3) != 0);
-  if (ch >= 0 && trace_enabled("audio"))
-    log(Log::Hle, "fmod: Stream_PlayEx ch=%d stream=%08x paused=%u", ch, arg(c, 0), arg(c, 3) != 0);
+  auto smp = st->sentence_smp ? st->sentence_smp : st->subs[0];
+  const int ch = start_channel(smp, (int)arg(c, 1), arg(c, 3) != 0);
+  if (ch >= 0) {
+    if ((st->mode & (kLoopNormal | kLoopBidi)) != 0 && smp->loop_end <= smp->loop_start) {
+      if (auto chan = channel_shared(ch)) {
+        std::lock_guard<std::mutex> lock(chan->m);
+        const uint32_t total_frames =
+            (uint32_t)(smp->pcm.size() / (smp->channels ? smp->channels : 1));
+        chan->loop_start = 0;
+        chan->loop_end = total_frames;
+        chan->looping = true;
+      }
+    }
+    st->active_ch = ch;
+    if (trace_enabled("audio"))
+      log(Log::Hle, "fmod: Stream_PlayEx ch=%d stream=%08x paused=%u", ch, arg(c, 0),
+          arg(c, 3) != 0);
+  }
   return ch < 0 ? (uint32_t)-1 : (uint32_t)ch;
 }
 
 HLE_STDCALL_AS(kDll, FSOUND_Stream_Stop, "_FSOUND_Stream_Stop@4", 1) {
-  // Single software voices: channels stop through FSOUND_StopSound; the registry entry stays.
-  return (stream_by(arg(c, 0)) ? 1u : 0u);
+  auto* st = stream_by(arg(c, 0));
+  if (!st) return 0;
+  if (st->active_ch >= 0) {
+    stop_channel(st->active_ch);
+    st->active_ch = -1;
+  }
+  return 1;
 }
 
 HLE_STDCALL_AS(kDll, FSOUND_Stream_Close, "_FSOUND_Stream_Close@4", 1) {
+  auto* st = stream_by(arg(c, 0));
+  if (!st) return 0;
+  if (st->active_ch >= 0) stop_channel(st->active_ch);
   std::lock_guard<std::mutex> lock(g_res_m);
   return g_streams.erase(arg(c, 0)) != 0 ? 1u : 0u;
 }
@@ -940,9 +969,8 @@ HLE_STDCALL_AS(kDll, FSOUND_Stream_GetLengthMs, "_FSOUND_Stream_GetLengthMs@4", 
     const uint32_t frames = (uint32_t)(s->pcm.size() / (s->channels ? s->channels : 1));
     return (uint32_t)((uint64_t)frames * 1000 / s->rate);
   };
-  if (!st->sentence.empty()) {  // TODO(wave 3): schedule the whole sentence, not only entry 0
-    const uint32_t sub = std::min(st->sentence[0], (uint32_t)st->subs.size() - 1);
-    ms = ms_of(st->subs[sub]);
+  if (st->sentence_smp) {
+    ms = ms_of(st->sentence_smp);
   } else if (!st->subs.empty()) {
     ms = ms_of(st->subs[0]);
   }
@@ -950,8 +978,8 @@ HLE_STDCALL_AS(kDll, FSOUND_Stream_GetLengthMs, "_FSOUND_Stream_GetLengthMs@4", 
 }
 
 HLE_STDCALL_AS(kDll, FSOUND_Stream_GetOpenState, "_FSOUND_Stream_GetOpenState@4", 1) {
-  // 0 = opened; the HLE has no deferred open.
-  return (stream_by(arg(c, 0)) ? 0u : (uint32_t)-1);
+  // 0 = opened; -3 (0xFFFFFFFD) = failed to open / invalid stream handle (checked at 0x005409a0).
+  return (stream_by(arg(c, 0)) ? 0u : (uint32_t)-3);
 }
 
 HLE_STDCALL_AS(kDll, FSOUND_Stream_SetSubStreamSentence, "_FSOUND_Stream_SetSubStreamSentence@12",
@@ -960,9 +988,37 @@ HLE_STDCALL_AS(kDll, FSOUND_Stream_SetSubStreamSentence, "_FSOUND_Stream_SetSubS
   if (!st) return 0;
   const uint32_t list = arg(c, 1), num = arg(c, 2);
   st->sentence.clear();
+  st->sentence_smp.reset();
   st->sentence.reserve(num);
   for (uint32_t i = 0; i < num; i++) {
     st->sentence.push_back(ld32(list + 4 * i));
+  }
+  if (!st->sentence.empty() && !st->subs.empty()) {
+    const uint32_t seed_idx = std::min(st->sentence[0], (uint32_t)st->subs.size() - 1);
+    const auto& seed = st->subs[seed_idx];
+    st->sentence_smp = std::make_shared<FmodSample>();
+    st->sentence_smp->handle = new_handle();
+    {
+      std::lock_guard<std::mutex> lock(g_res_m);
+      g_samples[st->sentence_smp->handle] = st->sentence_smp;
+    }
+    st->sentence_smp->rate = seed->rate;
+    st->sentence_smp->channels = seed->channels;
+    st->sentence_smp->mode = seed->mode;
+    st->sentence_smp->def_vol = seed->def_vol;
+    st->sentence_smp->def_pan = seed->def_pan;
+    st->sentence_smp->def_pri = seed->def_pri;
+    st->sentence_smp->min_dist = seed->min_dist;
+    st->sentence_smp->max_dist = seed->max_dist;
+    for (uint32_t idx : st->sentence) {
+      const uint32_t sub = std::min(idx, (uint32_t)st->subs.size() - 1);
+      const auto& pcm = st->subs[sub]->pcm;
+      st->sentence_smp->pcm.insert(st->sentence_smp->pcm.end(), pcm.begin(), pcm.end());
+    }
+    st->sentence_smp->loop_start = 0;
+    st->sentence_smp->loop_end =
+        (uint32_t)(st->sentence_smp->pcm.size() /
+                   (st->sentence_smp->channels ? st->sentence_smp->channels : 1));
   }
   return 1;
 }

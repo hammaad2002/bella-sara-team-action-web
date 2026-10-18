@@ -59,6 +59,31 @@ Texture8* create_texture8(uint32_t w, uint32_t h, uint32_t levels, uint32_t usag
   return t;
 }
 
+Texture8* create_cube_texture8(uint32_t edge, uint32_t levels, uint32_t usage, uint32_t fmt, uint32_t pool,
+                               uint32_t gl_tex) {
+  auto* t = new Texture8();
+  t->is_cube = true;
+  t->width = edge;
+  t->height = edge;
+  uint32_t full = mip_level_count(edge, edge);
+  t->levels = levels ? (levels > full ? full : levels) : 1;
+  t->usage = usage;
+  t->format = fmt;
+  t->pool = pool;
+  t->gl_tex = gl_tex;
+  t->level.resize(6 * t->levels);
+  t->level_surface.resize(6 * t->levels);
+  for (uint32_t face = 0; face < 6; face++) {
+    for (uint32_t l = 0; l < t->levels; l++) {
+      size_t idx = t->slot_index(face, l);
+      t->level[idx].w = std::max(1u, edge >> l);
+      t->level[idx].h = std::max(1u, edge >> l);
+      t->level[idx].pitch = d3d::row_pitch(fmt, t->level[idx].w);
+    }
+  }
+  return t;
+}
+
 VertexBuffer8* create_vertex_buffer8(uint32_t length, uint32_t usage, uint32_t fvf, uint32_t pool, uint32_t gl_buf,
                                      uint32_t mem) {
   auto* vb = new VertexBuffer8();
@@ -112,6 +137,15 @@ uint32_t expose_d3d8_index_buffer(ComObject* ib) {
 }
 
 uint32_t wrap_texture8(Texture8* texture) { return expose_d3d8_texture(texture); }
+
+uint32_t expose_d3d8_cube_texture(ComObject* texture) {
+  for (uint32_t w : texture->wrappers) {
+    if (w && com_object(w)) return w;
+  }
+  return com_wrap(texture, iface_d3d8_cube_texture());
+}
+
+uint32_t wrap_cube_texture8(Texture8* texture) { return expose_d3d8_cube_texture(texture); }
 uint32_t wrap_vertex_buffer8(VertexBuffer8* vb) { return expose_d3d8_vertex_buffer(vb); }
 uint32_t wrap_index_buffer8(IndexBuffer8* ib) { return expose_d3d8_index_buffer(ib); }
 uint32_t wrap_shader8(Shader8* s) {
@@ -130,17 +164,6 @@ uint32_t wrap_state_block8(StateBlock8* sb) {
 namespace {
 
 uint32_t ok(Cpu*, ComObject*) { return S_OK; }
-
-void upload_tex_level(Texture8* t, uint32_t level);
-
-struct TextureLevelSurface8 : ComObject {
-  const char* type_name() const override { return "D3D8TextureSurface"; }
-  Texture8* tex = nullptr;
-  uint32_t level = 0;
-  ~TextureLevelSurface8() override {
-    if (tex && tex->refs > 0) tex->refs--;
-  }
-};
 
 struct VbLock {
   uint32_t off = 0, size = 0;
@@ -164,21 +187,11 @@ void upload_ib(IndexBuffer8* b, uint32_t off, uint32_t size) {
   s.bytes(host(b->mem + off), size);
 }
 
-void upload_tex_level(Texture8* t, uint32_t level) {
-  if (level >= t->level.size()) return;
-  TexLevel& lv = t->level[level];
-  if (!lv.mem) return;
-  uint32_t rows = d3d::level_rows(t->format, lv.h);
-  uint32_t bytes = lv.pitch * rows;
-  cmd::Stream& s = d3d8_cmd_stream();
-  s.op(cmd::OpUploadTexture, {t->gl_tex, 0, level, lv.w, lv.h, t->format, lv.pitch, rows, bytes});
-  s.bytes(host(lv.mem), bytes);
-  lv.dirty = false;
-}
-
-uint32_t tex_ensure_level_mem(Texture8* t, uint32_t level) {
-  if (level >= t->levels) return 0;
-  TexLevel& lv = t->level[level];
+uint32_t tex_ensure_level_mem(Texture8* t, uint32_t face, uint32_t level) {
+  if (level >= t->levels || (t->is_cube && face >= 6)) return 0;
+  size_t idx = t->slot_index(face, level);
+  if (idx >= t->level.size()) return 0;
+  TexLevel& lv = t->level[idx];
   if (!lv.mem) {
     uint32_t rows = d3d::level_rows(t->format, lv.h);
     lv.mem = heap_alloc(process_heap(), lv.pitch * rows, true);
@@ -234,12 +247,13 @@ uint32_t surf_GetDesc(Cpu* c, ComObject* self) {
   if (auto* ts = dynamic_cast<TextureLevelSurface8*>(self)) {
     Texture8* t = ts->tex;
     if (t && ts->level < t->levels) {
-      w = t->level[ts->level].w;
-      h = t->level[ts->level].h;
+      size_t idx = t->slot_index(ts->face, ts->level);
+      w = t->level[idx].w;
+      h = t->level[idx].h;
       fmt = t->format;
       usage = t->usage;
       pool = t->pool;
-      pitch = t->level[ts->level].pitch;
+      pitch = t->level[idx].pitch;
     }
   } else if (auto* s = dynamic_cast<Surface8*>(self)) {
     w = s->width;
@@ -267,9 +281,10 @@ uint32_t surf_LockRect(Cpu* c, ComObject* self) {
   if (auto* ts = dynamic_cast<TextureLevelSurface8*>(self)) {
     Texture8* t = ts->tex;
     if (t && ts->level < t->levels) {
-      TexLevel& lv = t->level[ts->level];
-      if (lv.dirty && lv.mem) upload_tex_level(t, ts->level);
-      mem = tex_ensure_level_mem(t, ts->level);
+      size_t idx = t->slot_index(ts->face, ts->level);
+      TexLevel& lv = t->level[idx];
+      if (lv.dirty && lv.mem) upload_tex_face_level(t, ts->face, ts->level);
+      mem = tex_ensure_level_mem(t, ts->face, ts->level);
       pitch = lv.pitch;
       uint32_t off = lock_rect_offset(t->format, pitch, rect);
       if (!(flags & 0x10)) lv.dirty = true;
@@ -294,7 +309,8 @@ uint32_t surf_LockRect(Cpu* c, ComObject* self) {
 uint32_t surf_UnlockRect(Cpu*, ComObject* self) {
   if (auto* ts = dynamic_cast<TextureLevelSurface8*>(self)) {
     Texture8* t = ts->tex;
-    if (t && ts->level < t->levels && t->level[ts->level].dirty) upload_tex_level(t, ts->level);
+    if (t && ts->level < t->levels && t->level[t->slot_index(ts->face, ts->level)].dirty)
+      upload_tex_face_level(t, ts->face, ts->level);
   } else if (auto* s = dynamic_cast<Surface8*>(self)) {
     if (s->dirty && s->gl_tex) upload_surface8(s);
   }
@@ -351,8 +367,8 @@ uint32_t tex_LockRect(Cpu* c, ComObject* self) {
   uint32_t level = arg(c, 1), out = arg(c, 2), rect = arg(c, 3), flags = arg(c, 4);
   if (level >= t->levels) return d3d::D3DERR_INVALIDCALL;
   TexLevel& lv = t->level[level];
-  if (lv.dirty && lv.mem) upload_tex_level(t, level);
-  uint32_t mem = tex_ensure_level_mem(t, level);
+  if (lv.dirty && lv.mem) upload_tex_face_level(t, 0, level);
+  uint32_t mem = tex_ensure_level_mem(t, 0, level);
   uint32_t off = 0;
   if (rect) {
     uint32_t left = ld32(rect), top = ld32(rect + 4);
@@ -371,13 +387,88 @@ uint32_t tex_UnlockRect(Cpu* c, ComObject* self) {
   Texture8* t = T8(self);
   uint32_t level = arg(c, 1);
   if (level >= t->levels) return d3d::D3DERR_INVALIDCALL;
-  if (t->level[level].dirty) upload_tex_level(t, level);
+  if (t->level[level].dirty) upload_tex_face_level(t, 0, level);
+  return S_OK;
+}
+
+uint32_t cubetex_GetType(Cpu*, ComObject*) { return d3d::RTYPE_CUBETEXTURE; }
+
+uint32_t cubetex_GetLevelDesc(Cpu* c, ComObject* self) {
+  Texture8* t = T8(self);
+  uint32_t level = arg(c, 1), p = arg(c, 2);
+  if (level >= t->levels || p < kNullGuardEnd) return d3d::D3DERR_INVALIDCALL;
+  uint32_t w = t->level[t->slot_index(0, level)].w;
+  uint32_t h = t->level[t->slot_index(0, level)].h;
+  st32(p + 0, t->format);
+  st32(p + 4, d3d::RTYPE_CUBETEXTURE);
+  st32(p + 8, t->usage);
+  st32(p + 12, t->pool);
+  st32(p + 16, t->level[t->slot_index(0, level)].pitch * d3d::level_rows(t->format, h));
+  st32(p + 20, 0);
+  st32(p + 24, w);
+  st32(p + 28, h);
+  return S_OK;
+}
+
+uint32_t cubetex_GetCubeMapSurface(Cpu* c, ComObject* self) {
+  Texture8* t = T8(self);
+  uint32_t face = arg(c, 1), level = arg(c, 2), out = arg(c, 3);
+  if (face >= 6 || level >= t->levels || out < kNullGuardEnd) return d3d::D3DERR_INVALIDCALL;
+  size_t idx = t->slot_index(face, level);
+  if (t->level_surface.size() <= idx) t->level_surface.resize(idx + 1);
+  uint32_t& slot = t->level_surface[idx];
+  if (!slot || !com_object(slot)) {
+    auto* view = new TextureLevelSurface8();
+    view->tex = t;
+    view->face = face;
+    view->level = level;
+    t->refs++;
+    slot = com_wrap(view, iface_d3d8_surface());
+  } else {
+    ComObject* o = com_object(slot);
+    if (o) o->refs++;
+  }
+  st32(out, slot);
+  return S_OK;
+}
+
+uint32_t cubetex_LockRect(Cpu* c, ComObject* self) {
+  Texture8* t = T8(self);
+  uint32_t face = arg(c, 1), level = arg(c, 2), out = arg(c, 3), rect = arg(c, 4), flags = arg(c, 5);
+  if (face >= 6 || level >= t->levels) return d3d::D3DERR_INVALIDCALL;
+  size_t idx = t->slot_index(face, level);
+  TexLevel& lv = t->level[idx];
+  if (lv.dirty && lv.mem) upload_tex_face_level(t, face, level);
+  uint32_t mem = tex_ensure_level_mem(t, face, level);
+  uint32_t off = 0;
+  if (rect) {
+    uint32_t left = ld32(rect), top = ld32(rect + 4);
+    d3d::FormatInfo f = d3d::format_info(t->format);
+    off = f.block ? (top / 4) * lv.pitch + (left / 4) * f.block : top * lv.pitch + left * f.bpp / 8;
+  }
+  if (out >= kNullGuardEnd) {
+    st32(out, lv.pitch);
+    st32(out + 4, mem + off);
+  }
+  if (!(flags & 0x10)) lv.dirty = true;
+  return S_OK;
+}
+
+uint32_t cubetex_UnlockRect(Cpu* c, ComObject* self) {
+  Texture8* t = T8(self);
+  uint32_t face = arg(c, 1), level = arg(c, 2);
+  if (face >= 6 || level >= t->levels) return d3d::D3DERR_INVALIDCALL;
+  size_t idx = t->slot_index(face, level);
+  if (t->level[idx].dirty) upload_tex_face_level(t, face, level);
   return S_OK;
 }
 
 static void texture_release_unlocked(Texture8* t) {
-  for (uint32_t l = 0; l < t->levels; l++) {
-    if (t->level[l].dirty) upload_tex_level(t, l);
+  for (size_t slot = 0; slot < t->level.size(); slot++) {
+    if (!t->level[slot].dirty) continue;
+    uint32_t face = t->is_cube ? (uint32_t)(slot / t->levels) : 0;
+    uint32_t lv = t->is_cube ? (uint32_t)(slot % t->levels) : (uint32_t)slot;
+    upload_tex_face_level(t, face, lv);
   }
 }
 
@@ -471,17 +562,36 @@ uint32_t sb_Capture(Cpu*, ComObject* self) {
 
 void texture_ensure_mem(Texture8* t, uint32_t level) {
   if (level >= t->levels) return;
-  TexLevel& lv = t->level[level];
+  size_t idx = t->slot_index(0, level);
+  if (idx >= t->level.size()) return;
+  TexLevel& lv = t->level[idx];
   if (!lv.mem) {
     uint32_t rows = d3d::level_rows(t->format, lv.h);
     lv.mem = heap_alloc(process_heap(), lv.pitch * rows, true);
   }
 }
 
+void upload_tex_face_level(Texture8* t, uint32_t face, uint32_t level) {
+  if (level >= t->levels || (t->is_cube && face >= 6)) return;
+  size_t idx = t->slot_index(face, level);
+  if (idx >= t->level.size()) return;
+  TexLevel& lv = t->level[idx];
+  if (!lv.mem) return;
+  uint32_t rows = d3d::level_rows(t->format, lv.h);
+  uint32_t bytes = lv.pitch * rows;
+  cmd::Stream& s = d3d8_cmd_stream();
+  s.op(cmd::OpUploadTexture, {t->gl_tex, face, level, lv.w, lv.h, t->format, lv.pitch, rows, bytes});
+  s.bytes(host(lv.mem), bytes);
+  lv.dirty = false;
+}
+
 void texture_flush_dirty(Texture8* t) {
   if (!t) return;
-  for (uint32_t l = 0; l < t->levels; l++) {
-    if (t->level[l].dirty) upload_tex_level(t, l);
+  for (size_t slot = 0; slot < t->level.size(); slot++) {
+    if (!t->level[slot].dirty) continue;
+    uint32_t face = t->is_cube ? (uint32_t)(slot / t->levels) : 0;
+    uint32_t lv = t->is_cube ? (uint32_t)(slot % t->levels) : (uint32_t)slot;
+    upload_tex_face_level(t, face, lv);
   }
 }
 
@@ -519,6 +629,30 @@ rt::ComInterface& iface_d3d8_surface() {
                          {"GetDesc", 1, surf_GetDesc},
                          {"LockRect", 3, surf_LockRect},
                          {"UnlockRect", 0, surf_UnlockRect}});
+  return i;
+}
+
+rt::ComInterface& iface_d3d8_cube_texture() {
+  static ComInterface i("IDirect3DCubeTexture8",
+                        {{"QueryInterface", 2, com_QueryInterface_none},
+                         {"AddRef", 0, com_AddRef},
+                         {"Release", 0, tex_Release},
+                         {"GetDevice", 1, surf_GetDevice},
+                         {"SetPrivateData", 3, ok},
+                         {"GetPrivateData", 3, res_GetPrivateData},
+                         {"FreePrivateData", 1, ok},
+                         {"SetPriority", 1, res_SetPriority},
+                         {"GetPriority", 0, res_GetPriority},
+                         {"PreLoad", 0, res_PreLoad},
+                         {"GetType", 0, cubetex_GetType},
+                         {"SetLOD", 1, tex_SetLOD},
+                         {"GetLOD", 0, tex_GetLOD},
+                         {"GetLevelCount", 0, tex_GetLevelCount},
+                         {"GetLevelDesc", 2, cubetex_GetLevelDesc},
+                         {"GetCubeMapSurface", 3, cubetex_GetCubeMapSurface},
+                         {"LockRect", 5, cubetex_LockRect},
+                         {"UnlockRect", 2, cubetex_UnlockRect},
+                         {"AddDirtyRect", 2, ok}});
   return i;
 }
 

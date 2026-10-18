@@ -24,7 +24,7 @@ const check = (ok, what, detail = "") => {
 };
 
 // Simulated standard-mapping controller. Its state follows a script keyed by presented frames
-// (window.__shrek2.frames) or, before the game runs, window.__padHold (button indices / axes).
+// (window.__bella.frames) or, before the game runs, window.__padHold (button indices / axes).
 const fakePad = (script) => {
   const pad = {
     id: "Test Controller (STANDARD GAMEPAD Vendor: 045e Product: 028e)",
@@ -44,7 +44,7 @@ const fakePad = (script) => {
   const names = { a: 0, b: 1, x: 2, y: 3, lb: 4, rb: 5, lt: 6, rt: 7, back: 8, start: 9, ls: 10, rs: 11, up: 12, down: 13, left: 14, right: 15 };
   const axes = { lx: 0, ly: 1, rx: 2, ry: 3 };
   navigator.getGamepads = () => {
-    const f = window.__shrek2?.frames ?? 0;
+    const f = window.__bella?.frames ?? 0;
     const held = new Set(window.__padHold.buttons);
     const ax = [...window.__padHold.axes];
     for (const e of script) {
@@ -79,7 +79,7 @@ const launch = async (script) => {
 const registry = (page) =>
   page.evaluate(async () => {
     try {
-      const f = await (await (await (await navigator.storage.getDirectory()).getDirectoryHandle("shrek2")).getFileHandle("registry.txt")).getFile();
+      const f = await (await (await (await navigator.storage.getDirectory()).getDirectoryHandle("bella")).getFileHandle("registry.txt")).getFile();
       const out = {};
       for (const line of (await f.text()).split("\n")) {
         const [key, name, , value] = line.split("\t");
@@ -94,15 +94,15 @@ const registry = (page) =>
 if (!only || only === "settings") {
   const { ctx, page } = await launch("");
   await page.goto(base);
-  await page.waitForFunction(() => window.__shrek2?.state === "ready", null, { timeout: 60_000 });
+  await page.waitForFunction(() => window.__bella?.state === "ready", null, { timeout: 60_000 });
   // Start from no settings at all, as on a first visit.
   await page.evaluate(async () => {
-    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("shrek2");
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("bella");
     await dir.removeEntry("registry.txt").catch(() => {});
-    localStorage.removeItem("shrek2.prefs");
+    localStorage.removeItem("bella.prefs");
   });
   await page.reload();
-  await page.waitForFunction(() => window.__shrek2?.state === "ready", null, { timeout: 60_000 });
+  await page.waitForFunction(() => window.__bella?.state === "ready", null, { timeout: 60_000 });
   await page.click("#settings");
   await page.locator("#settings-panel").waitFor({ state: "visible" });
   check((await page.locator("#set-resolution option:checked").innerText()) === "1024 × 768", "default resolution 1024 × 768");
@@ -166,7 +166,7 @@ if (!only || only === "settings") {
 
   await page.click("#set-alias");
   await page.keyboard.press("KeyP");
-  check((await page.locator("#set-alias").innerText()) === "P" && (await page.evaluate(() => JSON.parse(localStorage.getItem("shrek2.prefs")).pauseAlias)) === "KeyP", "substitute Esc key changed to P");
+  check((await page.locator("#set-alias").innerText()) === "P" && (await page.evaluate(() => JSON.parse(localStorage.getItem("bella.prefs")).pauseAlias)) === "KeyP", "substitute Esc key changed to P");
 
   await page.click("#set-revert");
   await page.click("#set-revert-yes");
@@ -179,27 +179,27 @@ if (!only || only === "settings") {
 }
 
 if (!only || only === "play") {
-  // The same menu path as the native test (tools: SHREK2_PAD), on a fresh save.
-  const script = "3450:a,3700:a,3900:a,4100:a,4300:a,4500:a,5000:a,5600:a,5900:ly=-1+150,6160:start";
-  const captures = [5880, 6000, 6060, 6120, 6230];
+  // The same menu path as the native test (tools: BELLA_PAD), on a fresh save.
+  const script = "100:a,180:a,250:ly=-1+60,320:start";
+  const captures = [120, 240, 360];
   const { ctx, page } = await launch(script);
-  await page.goto(`${base}?autoplay&resetSave&env=SHREK2_TRACE=input&capture=${captures.join(",")}`);
+  await page.goto(`${base}?autoplay&resetSave&env=BELLA_TRACE=input&capture=${captures.join(",")}`);
   const outDir = "work/web-frames-pad";
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   const deadline = Date.now() + Number(opt("seconds", "260")) * 1000;
   while (Date.now() < deadline) {
     await page.waitForTimeout(3000);
-    const s = await page.evaluate(() => ({ state: window.__shrek2.state, frames: window.__shrek2.frames, caps: Object.keys(window.__shrek2.captures).length }));
+    const s = await page.evaluate(() => ({ state: window.__bella.state, frames: window.__bella.frames, caps: Object.keys(window.__bella.captures).length }));
     if (s.state === "error" || s.caps >= captures.length) break;
   }
-  for (const [frame, url] of Object.entries(await page.evaluate(() => window.__shrek2.captures)))
+  for (const [frame, url] of Object.entries(await page.evaluate(() => window.__bella.captures)))
     writeFileSync(`${outDir}/frame_${String(frame).padStart(5, "0")}.png`, Buffer.from(url.split(",")[1], "base64"));
-  const log = await page.evaluate(() => window.__shrek2.log);
+  const log = await page.evaluate(() => window.__bella.log);
   writeFileSync(`${outDir}/engine.log`, log.join("\n"));
   check(log.some((l) => l.includes("input: virtual gamepad 0 connected")), "the game sees player 1's controller");
   check(log.some((l) => l.includes("CreateDevice: 1024x768")), "game started at the default 1024 × 768");
-  check((await page.evaluate(() => Object.keys(window.__shrek2.captures).length)) === captures.length, "reached gameplay with the controller", `captures in ${outDir}`);
+  check((await page.evaluate(() => Object.keys(window.__bella.captures).length)) === captures.length, "reached gameplay with the controller", `captures in ${outDir}`);
   await ctx.close();
 }
 
