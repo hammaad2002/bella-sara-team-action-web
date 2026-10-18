@@ -29,6 +29,11 @@ const ENGINE_URL = DEV_ENGINE ? "/dev-engine/bellasara.js" : "/engine/bellasara_
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const prefs = loadPrefs();
+try {
+  localStorage.setItem("shrek2.prefs", JSON.stringify(prefs));
+} catch {
+  // tools/web-pad-test.mjs reads this legacy key; ignore when storage is blocked.
+}
 const pads = new Gamepads();
 const help = new Help(prefs);
 const status = $("status");
@@ -52,6 +57,8 @@ interface DevState {
 }
 const dev: DevState = { frames: 0, captures: {}, log: [], state: "init" };
 (window as unknown as { __bella: DevState }).__bella = dev;
+// tools/web-pad-test.mjs still reads `window.__shrek2` for frame-synced pad scripts.
+(window as unknown as { __shrek2: DevState }).__shrek2 = dev;
 
 function setState(s: string, text: string) {
   dev.state = s;
@@ -255,12 +262,21 @@ async function play() {
       .filter(Boolean)
       .map((kv) => [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)]),
   );
+  let onPresentedFrame: () => void = () => {};
+  const notePresentFromLog = (s: string) => {
+    const m = s.match(/D3D8 Present #(\d+)/);
+    if (m) while (dev.frames < Number(m[1])) onPresentedFrame();
+  };
   const engine: Engine = await createBellaSara({
     canvas,
     preRun: [(m: { ENV: Record<string, string> }) => Object.assign(m.ENV, env)],
-    print: (s: string) => dev.log.push(s),
+    print: (s: string) => {
+      dev.log.push(s);
+      notePresentFromLog(s);
+    },
     printErr: (s: string) => {
       dev.log.push(s);
+      notePresentFromLog(s);
       if (s.includes("[fatal]") || s.includes("[error]")) console.error(s);
     },
   });
@@ -326,30 +342,33 @@ async function play() {
     });
   const captures = new Set((params.get("capture") ?? "").split(",").filter(Boolean).map(Number));
 
-  const tick = () => {
-    pads.feed(engine);
-    if (engine._web_render_tick()) {
-      dev.frames++;
-      if (captures.has(dev.frames)) dev.captures[dev.frames] = canvas.toDataURL("image/png");
-      for (const k of script) {
-        const key = KEYS[k.code];
-        if (!key) continue;
-        if (!k.down && dev.frames >= k.frame) {
-          k.down = true;
-          engine._web_key(0, key[0], key[1], 0);
-        } else if (k.down && !k.up && dev.frames >= k.frame + k.hold) {
-          k.up = true;
-          engine._web_key(1, key[0], key[1], 0);
-        }
+  onPresentedFrame = () => {
+    dev.frames++;
+    if (captures.has(dev.frames)) dev.captures[dev.frames] = canvas.toDataURL("image/png");
+    for (const k of script) {
+      const key = KEYS[k.code];
+      if (!key) continue;
+      if (!k.down && dev.frames >= k.frame) {
+        k.down = true;
+        engine._web_key(0, key[0], key[1], 0);
+      } else if (k.down && !k.up && dev.frames >= k.frame + k.hold) {
+        k.up = true;
+        engine._web_key(1, key[0], key[1], 0);
       }
     }
+  };
+
+  const tick = () => {
+    pads.feed(engine);
+    while (engine._web_render_tick()) onPresentedFrame();
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
 
   setState("running", "Running");
   canvas.focus();
-  engine.callMain([`/opfs/${INSTALL_DIR}`]);
+  // Yield so the first animation frame can run while the engine starts on a worker thread.
+  queueMicrotask(() => engine.callMain([`/opfs/${INSTALL_DIR}`]));
 }
 
 /** The overlay with the fullscreen button and input hints; shown while the mouse moves. */
@@ -402,7 +421,14 @@ const saveStatus = () => $("save-status");
 
 async function refreshSaves() {
   const saves = await listSaves().catch(() => []);
-  $<HTMLButtonElement>("save-export").disabled = saves.length === 0;
+  let hasSettings = false;
+  try {
+    await (await gameDir()).getFileHandle("settings.dat");
+    hasSettings = true;
+  } catch {
+    // No settings file yet.
+  }
+  $<HTMLButtonElement>("save-export").disabled = saves.length === 0 && !hasSettings;
   if (!saveStatus().dataset.sticky) {
     saveStatus().textContent = saves.length
       ? `${saves.length} save ${saves.length === 1 ? "slot" : "slots"} in this browser, last saved ${saves.reduce((a, b) => (a.date > b.date ? a : b)).date.toLocaleString()}.`
@@ -432,7 +458,8 @@ function attachSaves() {
     busy(true);
     try {
       await applyImport(plan);
-      sayAboutSaves(`Restored ${plan.files.map((f) => f.name).join(", ")}.`);
+      const names = [...plan.files.map((f) => f.name), ...(plan.settings ? ["settings.dat"] : [])];
+      sayAboutSaves(`Restored ${names.join(", ")}.`);
     } finally {
       busy(false);
     }

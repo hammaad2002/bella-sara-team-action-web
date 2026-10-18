@@ -91,8 +91,12 @@ export class Help {
     list("help-mouse", mouse);
     const alias = this.prefs.pauseAlias;
     const other: [string, string][] = [
-      ["F1", "Show or hide this list (the game waits meanwhile)"],
-      ["Arrow keys, Enter, Esc", "Choose, accept and go back in the game's menus"],
+      ["F1", "Show or hide this controls list (the game pauses meanwhile)"],
+      ["Arrow keys / WASD", "Move your horse (game default: arrows; Manual preset in Settings uses W A S D)"],
+      ["Space", "Jump and interact in the world; confirm choices in menus"],
+      ["Mouse", "Menus and the stable; click the game to use the mouse for the camera when enabled in Settings"],
+      ["Esc", "Pause and open the in-game menu"],
+      ["Arrow keys, Enter, Esc", "Navigate menus when a list or dialog is open"],
     ];
     if (alias) other.push([keyLabel(alias), "Works as Esc where the browser keeps Esc (fullscreen, captured mouse)"]);
     other.push(["Fullscreen", "Button at the top right of the game (move the mouse to show it); in Chrome and Edge hold Esc to leave"]);
