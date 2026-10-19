@@ -132,6 +132,7 @@ struct ImportInfo {
 };
 std::vector<ImportInfo> import_list();
 [[noreturn]] void process_exit(uint32_t code);
+void user32_pump();
 
 // Argument and return helpers for HLE functions (the return address is at [esp]).
 inline uint32_t arg(Cpu* c, int i) { return ld32(c->esp + 4 + 4 * (uint32_t)i); }

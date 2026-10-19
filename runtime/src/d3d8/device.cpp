@@ -1214,6 +1214,7 @@ uint32_t Reset(Cpu* c, ComObject* self) {
 }
 
 uint32_t Present(Cpu* c, ComObject* self) {
+  rt::user32_pump();
   Device8* d = D(self);
   if (d->lost) {
     flush_stream(false);

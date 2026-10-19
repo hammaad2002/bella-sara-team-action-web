@@ -226,6 +226,12 @@ void pump() {
 }
 }  // namespace
 
+namespace rt {
+void user32_pump() { pump(); }
+}  // namespace rt
+
+namespace {
+
 HLE_STDCALL(kDll, RegisterClassExA, 1) {
   uint32_t wc = arg(c, 0);
   std::string name = read_cstr(ld32(wc + 40));
@@ -635,6 +641,7 @@ HLE_STDCALL(kDll, EndPaint, 2) { return 1; }
 HLE_STDCALL(kDll, GetKeyboardLayout, 1) { return 0x04090409; }  // US English
 
 static bool key_or_mouse_down(uint32_t vk) {
+  pump();
   if (vk == 1 || vk == 2 || vk == 4) return plat::mouse_button_down(vk == 1 ? 0 : vk == 2 ? 1 : 2);
   uint32_t sc = map_virtual_key(vk, 0);
   return sc && sc < 256 && (plat::keyboard_state()[sc] & 0x80);
@@ -684,4 +691,5 @@ HLE_STDCALL("winmm.dll", timeSetEvent, 5) {
   return next_id++;
 }
 HLE_STDCALL("winmm.dll", timeKillEvent, 1) { return 0; }  // TIMERR_NOERROR
+}  // namespace
 

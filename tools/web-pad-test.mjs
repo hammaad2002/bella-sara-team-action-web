@@ -198,7 +198,7 @@ if (!only || only === "play") {
   const log = await page.evaluate(() => window.__bella.log);
   writeFileSync(`${outDir}/engine.log`, log.join("\n"));
   check(log.some((l) => l.includes("input: virtual gamepad 0 connected")), "the game sees player 1's controller");
-  check(log.some((l) => l.includes("CreateDevice: 1024x768")), "game started at the default 1024 × 768");
+  check(log.some((l) => l.includes("CreateDevice") && l.includes("800x600")), "game started at the default 800 × 600");
   check((await page.evaluate(() => Object.keys(window.__bella.captures).length)) === captures.length, "reached gameplay with the controller", `captures in ${outDir}`);
   await ctx.close();
 }

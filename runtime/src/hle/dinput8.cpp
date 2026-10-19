@@ -442,6 +442,7 @@ void fill_joystate(Device* d, const plat::GamepadState& s, uint32_t out, uint32_
 }
 
 uint32_t dev_GetDeviceState(Cpu* c, ComObject* self) {
+  user32_pump();
   auto* d = dev(self);
   uint32_t size = arg(c, 1), out = arg(c, 2);
   if (needs_acquire(d) && !d->acquired) return DIERR_NOTACQUIRED;
@@ -474,6 +475,7 @@ void write_objdata(uint32_t e, uint32_t objsize, uint32_t ofs, uint32_t data, ui
 
 // Buffered keyboard/mouse data: report transitions since the last call.
 uint32_t dev_GetDeviceData(Cpu* c, ComObject* self) {
+  user32_pump();
   auto* d = dev(self);
   uint32_t objsize = arg(c, 1), out = arg(c, 2), inout = arg(c, 3), flags = arg(c, 4);
   if (needs_acquire(d) && !d->acquired) return DIERR_NOTACQUIRED;

@@ -328,7 +328,7 @@ async function play() {
   };
   input.options.onHelp = toggleHelp;
   $("help-button").addEventListener("click", toggleHelp);
-  attachHud(input);
+  const showHud = attachHud(input);
 
   // Scripted keys for automated tests: frame:Code[+hold]
   const script = (params.get("keys") ?? "")
@@ -344,6 +344,7 @@ async function play() {
 
   onPresentedFrame = () => {
     dev.frames++;
+    if (dev.frames <= 120) showHud(6000);
     if (captures.has(dev.frames)) dev.captures[dev.frames] = canvas.toDataURL("image/png");
     for (const k of script) {
       const key = KEYS[k.code];
@@ -413,6 +414,7 @@ function attachHud(input: Input) {
   });
   update();
   show(6000);
+  return show;
 }
 
 // ---- Save backups ------------------------------------------------------------------------------
