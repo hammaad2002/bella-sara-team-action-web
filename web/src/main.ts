@@ -262,21 +262,12 @@ async function play() {
       .filter(Boolean)
       .map((kv) => [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)]),
   );
-  let onPresentedFrame: () => void = () => {};
-  const notePresentFromLog = (s: string) => {
-    const m = s.match(/D3D8 Present #(\d+)/);
-    if (m) while (dev.frames < Number(m[1])) onPresentedFrame();
-  };
   const engine: Engine = await createBellaSara({
     canvas,
     preRun: [(m: { ENV: Record<string, string> }) => Object.assign(m.ENV, env)],
-    print: (s: string) => {
-      dev.log.push(s);
-      notePresentFromLog(s);
-    },
+    print: (s: string) => dev.log.push(s),
     printErr: (s: string) => {
       dev.log.push(s);
-      notePresentFromLog(s);
       if (s.includes("[fatal]") || s.includes("[error]")) console.error(s);
     },
   });
@@ -342,7 +333,7 @@ async function play() {
     });
   const captures = new Set((params.get("capture") ?? "").split(",").filter(Boolean).map(Number));
 
-  onPresentedFrame = () => {
+  const onPresentedFrame = () => {
     dev.frames++;
     if (dev.frames <= 120) showHud(6000);
     if (captures.has(dev.frames)) dev.captures[dev.frames] = canvas.toDataURL("image/png");
@@ -361,7 +352,7 @@ async function play() {
 
   const tick = () => {
     pads.feed(engine);
-    while (engine._web_render_tick()) onPresentedFrame();
+    if (engine._web_render_tick()) onPresentedFrame();
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);

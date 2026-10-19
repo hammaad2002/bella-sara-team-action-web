@@ -7,7 +7,7 @@
 #include <unordered_map>
 
 namespace plat {
-__attribute__((weak)) void gl_create_context() {}
+__attribute__((weak)) bool gl_create_context() { return false; }
 __attribute__((weak)) void gl_swap() {}
 __attribute__((weak)) void gl_set_swap_interval(int) {}
 __attribute__((weak)) void frame_presented(uint64_t) {}

@@ -11,6 +11,9 @@
 #include "../gles/executor.h"
 #include "../hle/com.h"
 #include "../platform/platform.h"
+#if defined(__EMSCRIPTEN__)
+#include "../platform/web.h"
+#endif
 #include "d3d8.h"
 #include "d3d8/d3d8_sdk_nargs.h"
 
@@ -55,8 +58,11 @@ void flush_stream(bool /*present*/) {
   g_stream.clear();
 }
 #else
-void flush_stream(bool /*present*/) {
-  g_stream.clear();
+void flush_stream(bool present) {
+  size_t cap = g_stream.words.size();
+  ::web::submit(std::move(g_stream.words), present);
+  g_stream.words = {};
+  g_stream.words.reserve(cap);
 }
 #endif
 

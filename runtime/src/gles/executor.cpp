@@ -495,7 +495,7 @@ static void present() {
   else dh = (int)std::lround(ww / sa);
   int dx = (ww - dw) / 2, dy = (wh - dh) / 2;
   glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
-  glBlitFramebuffer(0, 0, (GLint)g.bbw, (GLint)g.bbh, dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+  glBlitFramebuffer(0, 0, (GLint)g.bbw, (GLint)g.bbh, dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_NEAREST);
   plat::gl_swap();
   g.state_dirty = true;
 #if !defined(__EMSCRIPTEN__)
