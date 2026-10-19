@@ -216,10 +216,18 @@ int main(int argc, char** argv) {
   }
   expect(dev != 0, "IDirect3DDevice8");
 
-  uint32_t caps_buf = rt::heap_alloc(rt::process_heap(), 304, true);
+  uint32_t caps_buf = rt::heap_alloc(rt::process_heap(), 256, true);
+  const uint32_t canary = 0xdeadbeefu;
+  st32(caps_buf + 212, canary);
+  st32(caps_buf + 216, canary);
   uint32_t caps_hr = dev ? com_call(cpu, dev, kDevGetDeviceCaps, {caps_buf}) : 1;
   expect(caps_hr == 0, "GetDeviceCaps hr");
   expect((ld32(caps_buf + 12) & 0x00080000u) != 0, "GetDeviceCaps Caps2 CANRENDERWINDOWED");
+  expect(ld32(caps_buf + 160) == 8, "GetDeviceCaps MaxActiveLights at offset 160");
+  expect(ld32(caps_buf + 196) == 0xfffe0101u, "GetDeviceCaps VertexShaderVersion vs.1.1 at offset 196");
+  expect(ld32(caps_buf + 204) == 0xffff0101u, "GetDeviceCaps PixelShaderVersion ps.1.1 at offset 204");
+  expect(ld32(caps_buf + 212) == canary, "GetDeviceCaps canary at offset 212 preserved (no buffer overflow)");
+  expect(ld32(caps_buf + 216) == canary, "GetDeviceCaps canary at offset 216 preserved (no buffer overflow)");
 
   uint32_t ds_ptr = rt::heap_alloc(rt::process_heap(), 4, true);
   uint32_t rt_ptr = rt::heap_alloc(rt::process_heap(), 4, true);
