@@ -71,12 +71,36 @@ const KeyMap* lookup(SDL_Scancode s) {
 // DirectInput keyboard indices: extended keys use 0x80 | scancode (e.g. DIK_UP = 0xC8).
 uint8_t dik_index(uint16_t dik) { return (uint8_t)((dik & 0x100) ? 0x80 | (dik & 0x7f) : dik); }
 
+bool headless_test_mode() {
+  return getenv("BELLA_HIDDEN") || getenv("BELLA_DUMP") || getenv("BELLA_DUMP_DIR");
+}
+
 }  // namespace
 
 bool init() {
   // Let SIGINT/SIGTERM terminate the process instead of becoming a quit event the game may ignore.
   SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
+  if (!getenv("DISPLAY")) {
+    const char* host_display = getenv("HOST_DISPLAY");
+    if (host_display && host_display[0]) setenv("DISPLAY", host_display, 1);
+  }
+  const Uint32 full = SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER;
+  if (SDL_Init(full) != 0) {
+    if (headless_test_mode()) {
+      const char* display = getenv("DISPLAY");
+      const char* driver = getenv("SDL_VIDEODRIVER");
+      rt::log(rt::Log::Warn,
+              "SDL_Init (video) failed: %s — continuing without video for headless test/dump "
+              "(DISPLAY=%s, SDL_VIDEODRIVER=%s)",
+              SDL_GetError(), display ? display : "(unset)", driver ? driver : "(default)");
+      SDL_ClearError();
+      const Uint32 no_video = SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER;
+      if (SDL_Init(no_video) != 0) {
+        rt::log(rt::Log::Error, "SDL_Init failed: %s", SDL_GetError());
+        return false;
+      }
+      return true;
+    }
     rt::log(rt::Log::Error, "SDL_Init failed: %s", SDL_GetError());
     return false;
   }
@@ -85,14 +109,31 @@ bool init() {
 
 void create_window(const std::string& title, int width, int height) {
   if (g_window) return;
+  const bool hidden = getenv("BELLA_HIDDEN") != nullptr;
   // OpenGL ES 3.0: the same API and shading language the web build gets from WebGL 2.
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
   SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
   SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-  g_window = SDL_CreateWindow(("Bella Sara - " + title).c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                              width, height, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | (getenv("BELLA_HIDDEN") ? SDL_WINDOW_HIDDEN : 0));
+  const std::string window_title = "Bella Sara - " + title;
+  Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
+  if (hidden) flags |= SDL_WINDOW_HIDDEN;
+  g_window = SDL_CreateWindow(window_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, flags);
+  if (!g_window && headless_test_mode()) {
+    rt::log(rt::Log::Warn, "SDL_CreateWindow failed: %s — retrying minimal hidden window", SDL_GetError());
+    SDL_ClearError();
+    g_window = SDL_CreateWindow(window_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height,
+                                SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
+  }
+  if (!g_window && headless_test_mode()) {
+    const char* driver = getenv("SDL_VIDEODRIVER");
+    rt::log(rt::Log::Warn,
+            "SDL_CreateWindow failed: %s — no video display; continuing without a window "
+            "(SDL_VIDEODRIVER=%s)",
+            SDL_GetError(), driver ? driver : "(default)");
+    return;
+  }
   if (!g_window) rt::fatal("SDL_CreateWindow failed: %s", SDL_GetError());
 }
 

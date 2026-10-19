@@ -8,10 +8,17 @@
 // compared byte for byte and shared runs grown to full length. A run that also occurs in an
 // --allow file (third-party code shipped as is, e.g. FFmpeg's libavcodec with its Bink tables)
 // is listed but accepted. Exit status 1 when any other shared run is found.
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
+const USAGE =
+  "usage: node tools/scan-dist.mjs <dist-folder> <game-dir-or-file>... [--allow <file>]... [--window 48] [--report 20]";
+
 const args = process.argv.slice(2);
+if (args.includes("--help") || args.includes("-h")) {
+  console.log(USAGE);
+  process.exit(0);
+}
 const opt = (name, dflt) => {
   const i = args.indexOf(`--${name}`);
   if (i < 0) return dflt;
@@ -25,7 +32,19 @@ const W = Number(opt("window", "48"));
 const REPORT = Number(opt("report", "20"));
 const [dist, ...gameRoots] = args;
 if (!dist || !gameRoots.length) {
-  console.error("usage: node tools/scan-dist.mjs <folder> <game-dir-or-file>... [--window 48]");
+  console.error(USAGE);
+  process.exit(2);
+}
+
+for (const root of gameRoots) {
+  if (!existsSync(root)) {
+    console.error(`error: game root does not exist: ${root}`);
+    process.exit(2);
+  }
+}
+
+if (!existsSync(dist)) {
+  console.error("error: dist directory does not exist or is empty");
   process.exit(2);
 }
 
@@ -79,7 +98,18 @@ const bits = new Uint32Array(1 << 23);
 const mark = (h) => (bits[(h >>> 4) & 0x7fffff] |= 1 << (h & 31));
 const marked = (h) => (bits[(h >>> 4) & 0x7fffff] & (1 << (h & 31))) !== 0;
 
-const distFiles = files(dist).map((p) => ({ path: relative(dist, p), data: readFileSync(p) }));
+let distFilePaths;
+try {
+  distFilePaths = files(dist);
+} catch (err) {
+  console.error("error: dist directory does not exist or is empty");
+  process.exit(2);
+}
+if (!distFilePaths.length) {
+  console.error("error: dist directory does not exist or is empty");
+  process.exit(2);
+}
+const distFiles = distFilePaths.map((p) => ({ path: relative(dist, p), data: readFileSync(p) }));
 const index = new Map(); // hash -> [[fileIndex, offset], ...]
 let indexed = 0;
 distFiles.forEach((f, fi) =>
