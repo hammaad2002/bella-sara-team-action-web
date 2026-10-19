@@ -207,8 +207,31 @@ static void log_texture_upload(uint32_t id, uint32_t level, uint32_t w, uint32_t
   rt::log(rt::Log::Info, "upload tex %u level %u %ux%u fmt %08x bytes %u: %s", id, level, w, h, fmt, nbytes, hex);
 }
 
+static bool upload_payload_valid(uint32_t w, uint32_t h, uint32_t fmt, uint32_t pitch, uint32_t rows, uint32_t bytes) {
+  if (w == 0 || h == 0 || pitch == 0 || rows == 0 || bytes == 0) return false;
+  uint32_t min_pitch = row_pitch(fmt, w);
+  if (pitch < min_pitch) return false;
+  uint32_t expect_rows = level_rows(fmt, h);
+  if (rows < expect_rows) return false;
+  uint64_t need = (uint64_t)pitch * (uint64_t)rows;
+  if (need > bytes || need > UINT32_MAX) return false;
+  return true;
+}
+
+static void set_unpack_state_tight() {
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+  glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+  glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+}
+
 static void upload_texture(uint32_t id, uint32_t face, uint32_t level, uint32_t w, uint32_t h, uint32_t fmt, uint32_t pitch, uint32_t rows,
-                           const uint8_t* data) {
+                           uint32_t bytes, const uint8_t* data) {
+  if (!upload_payload_valid(w, h, fmt, pitch, rows, bytes)) {
+    if (rt::trace_enabled("uploads") || rt::trace_enabled("debug"))
+      rt::log(rt::Log::Warn, "upload tex %u skip %ux%u pitch %u rows %u bytes %u (bad surface layout)", id, w, h, pitch, rows, bytes);
+    return;
+  }
   auto it = g.tex.find(id);
   if (it == g.tex.end()) return;
   Tex& t = it->second;
@@ -217,11 +240,23 @@ static void upload_texture(uint32_t id, uint32_t face, uint32_t level, uint32_t 
       rt::log(rt::Log::Warn, "upload tex %u skip level %u/%u %ux%u (invalid mip)", id, level, t.levels, w, h);
     return;
   }
+  uint32_t mw = std::max(1u, t.w >> level), mh = std::max(1u, t.h >> level);
+  if (w > mw || h > mh) {
+    if (rt::trace_enabled("uploads") || rt::trace_enabled("debug"))
+      rt::log(rt::Log::Warn, "upload tex %u skip level %u %ux%u exceeds %ux%u", id, level, w, h, mw, mh);
+    return;
+  }
+  if (t.target == GL_TEXTURE_CUBE_MAP && face >= 6) {
+    if (rt::trace_enabled("uploads") || rt::trace_enabled("debug"))
+      rt::log(rt::Log::Warn, "upload tex %u skip invalid cube face %u", id, face);
+    return;
+  }
   GLenum target = t.target == GL_TEXTURE_CUBE_MAP ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + face : GL_TEXTURE_2D;
   glBindTexture(t.target, t.gl);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  set_unpack_state_tight();
   const GlFormat& f = t.gfmt;
   uint32_t nbytes = pitch * rows;
+  if (nbytes > bytes) return;
   if (f.compressed) {
     log_texture_upload(id, level, w, h, fmt, nbytes, data);
     glCompressedTexSubImage2D(target, (GLint)level, 0, 0, (GLsizei)w, (GLsizei)h, f.internal, (GLsizei)nbytes, data);
@@ -321,19 +356,37 @@ static GLuint white_tex() {
   return tex;
 }
 
+static bool texture_bound_to_draw_framebuffer(uint32_t tid) {
+  if (!tid) return false;
+  for (uint32_t slot = 0; slot < 4; slot++) {
+    const Target& rt = g.rt[slot];
+    if (rt.kind == 2 && rt.id == tid) return true;
+  }
+  return false;
+}
+
 void bind_texture_units(uint8_t nstages, const uint8_t tex_kind[8]) {
   for (int i = 0; i < nstages; i++) {
     if (!tex_kind[i]) continue;
     uint32_t tid = g.textures[i];
     auto it = tid ? g.tex.find(tid) : g.tex.end();
     glActiveTexture(GL_TEXTURE0 + (GLenum)i);
-    if (tid == 0 || it == g.tex.end() || (g.rt[0].kind == 2 && tid != 0 && tid == g.rt[0].id)) {
+    const bool feedback = texture_bound_to_draw_framebuffer(tid);
+    if (tid == 0 || it == g.tex.end() || feedback) {
       glBindTexture(GL_TEXTURE_2D, white_tex());
       glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+      glBindSampler((GLuint)i, 0);
       continue;
     }
-    glBindTexture(it->second.target, it->second.gl);
-    glBindSampler((GLuint)i, sampler_for_texture_stage((uint32_t)i, it->second.levels > 1));
+    const Tex& tex = it->second;
+    if (tex.target == GL_TEXTURE_CUBE_MAP) {
+      glBindTexture(GL_TEXTURE_2D, 0);
+      glBindTexture(GL_TEXTURE_CUBE_MAP, tex.gl);
+    } else {
+      glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+      glBindTexture(GL_TEXTURE_2D, tex.gl);
+    }
+    glBindSampler((GLuint)i, sampler_for_texture_stage((uint32_t)i, tex.levels > 1));
   }
 }
 
@@ -511,6 +564,34 @@ static void readback(const Target& t, uint32_t w, uint32_t h, uint32_t fmt, uint
 
 // ---- Command loop ------------------------------------------------------------------------------
 
+// Bounds-checked command reader (cmd::Reader does not guard against truncated payloads).
+class StreamReader {
+ public:
+  StreamReader(const uint32_t* p, size_t n) : p_(p), end_(p + n) {}
+  bool done() const { return p_ >= end_; }
+  uint32_t u32() { return p_ < end_ ? *p_++ : 0; }
+  int32_t i32() { return (int32_t)u32(); }
+  float f32() {
+    float f = 0;
+    if (p_ < end_) memcpy(&f, p_++, 4);
+    return f;
+  }
+  bool can_read_bytes(uint32_t n) const { return n == 0 || p_ + (n + 3) / 4 <= end_; }
+  const uint8_t* bytes(uint32_t n) {
+    const uint8_t* b = (const uint8_t*)p_;
+    if (!can_read_bytes(n)) {
+      p_ = end_;
+      return b;
+    }
+    p_ += (n + 3) / 4;
+    return b;
+  }
+
+ private:
+  const uint32_t* p_;
+  const uint32_t* end_;
+};
+
 static void init() {
   if (g.inited) return;
   if (!plat::gl_create_context()) rt::fatal("cannot create an OpenGL ES 3.0 context");
@@ -523,7 +604,7 @@ static void init() {
 
 void execute(const uint32_t* words, size_t n) {
   init();
-  cmd::Reader r(words, n);
+  StreamReader r(words, n);
   while (!r.done()) {
     uint32_t op = r.u32();
     switch (op) {
@@ -548,7 +629,14 @@ void execute(const uint32_t* words, size_t n) {
       case cmd::OpUploadTexture: {
         uint32_t id = r.u32(), face = r.u32(), level = r.u32(), w = r.u32(), h = r.u32(), fmt = r.u32(), pitch = r.u32(), rows = r.u32(),
                  bytes = r.u32();
-        upload_texture(id, face, level, w, h, fmt, pitch, rows, r.bytes(bytes));
+        if (!r.can_read_bytes(bytes)) {
+          if (rt::trace_enabled("uploads") || rt::trace_enabled("debug"))
+            rt::log(rt::Log::Warn, "upload tex %u: command stream truncated (%u bytes missing)", id, bytes);
+          r.bytes(bytes);
+          break;
+        }
+        const uint8_t* data = r.bytes(bytes);
+        upload_texture(id, face, level, w, h, fmt, pitch, rows, bytes, data);
         break;
       }
       case cmd::OpCreateRenderbuffer: {
