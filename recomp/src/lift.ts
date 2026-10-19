@@ -482,9 +482,11 @@ class FnLifter {
         return;
       }
       case Mnemonic.Pushfd:
+      case Mnemonic.Pushf:
         this.push(this.composeEflags());
         return;
-      case Mnemonic.Popfd: {
+      case Mnemonic.Popfd:
+      case Mnemonic.Popf: {
         const v = this.pop();
         this.emit({ k: "cpuset", field: "eflags", ty: "i32", v: and(v, c32(~0x8d5)) });
         this.set("df", and(shru(v, c32(10)), c32(1)));
@@ -615,28 +617,6 @@ class FnLifter {
         if (o[0]?.kind === "string") return this.stringOp(i);
         return this.simdScalarCompare(i);
 
-      case Mnemonic.Pushf:
-      case Mnemonic.Popf: {
-        // 16-bit PUSHF/POPF (operand-size 66 prefix): only the low 16 EFLAGS bits move.
-        const wide = Math.abs(i.stackIncrement) !== 2;
-        if (i.mnemonic === Mnemonic.Pushf) {
-          const v = this.composeEflags();
-          if (wide) this.push(v);
-          else {
-            this.set("esp", sub(loc("esp"), c32(2)));
-            this.store(2, loc("esp"), v);
-          }
-        } else {
-          const v = this.tmp(wide ? this.pop() : this.tmp(load(2, loc("esp"))));
-          if (!wide) this.set("esp", add(loc("esp"), c32(2)));
-          const lo = and(v, c32(0xffff));
-          this.emit({ k: "cpuset", field: "eflags", ty: "i32", v: or(and(cpu("eflags"), c32(0xffff0000)), and(lo, c32(~0x8d5))) });
-          this.set("df", and(shru(lo, c32(10)), c32(1)));
-          const bit = (n: number) => and(shru(lo, c32(n)), c32(1));
-          this.defFlags(c32(0), c32(0), c32(0), (fl) => (fl === CF ? bit(0) : fl === PF ? bit(2) : fl === AF ? bit(4) : fl === ZF ? bit(6) : fl === SF ? bit(7) : bit(11)));
-        }
-        return;
-      }
       case Mnemonic.Ud2:
         this.emit({ k: "trap", msg: `ud2 at 0x${hex(i.ip)}` });
         return;

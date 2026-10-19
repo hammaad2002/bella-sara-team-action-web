@@ -27,11 +27,6 @@ std::set<std::string> g_fallback_logged;
 
 // Stack DWORDs the callee must pop (stdcall args including `this`, excluding the return address).
 int com_stdcall_pop_dwords(Cpu* c, int nargs, const char* method) {
-  // BellaSara.exe IDirect3D8::CheckDeviceMultiSampleType at 0059027b / 00590768 / 00590ff1
-  // pushes this + 5 args (no pQualityLevels); ComMethod nargs still documents SDK nargs=6.
-  if (strcmp(method, "CheckDeviceMultiSampleType") == 0) return nargs;
-  // Guest 00590567 / 00590704: GetAdapterModeCount pushes this + Format only (Adapter is global).
-  if (strcmp(method, "GetAdapterModeCount") == 0) return nargs;
   return nargs + 1;
 }
 
@@ -75,16 +70,7 @@ uint32_t ComInterface::vtable() {
                }
                if (trace_enabled("com"))
                  log(Log::Hle, "%s(%08x, %08x, %08x, %08x)", label.c_str(), arg(c, 1), arg(c, 2), arg(c, 3), arg(c, 4));
-               uint32_t shim_saved = 0;
-               if (strcmp(method_name, "GetAdapterModeCount") == 0) {
-                 // Guest omits Adapter; handler reads arg(c, 2) for Format. Mirror [esp+8] into caller slot.
-                 shim_saved = ld32(c->esp + 12);
-                 st32(c->esp + 12, ld32(c->esp + 8));
-               }
                uint32_t r = fn(c, self);
-               if (strcmp(method_name, "GetAdapterModeCount") == 0) {
-                 st32(c->esp + 12, shim_saved);
-               }
                ret_stdcall(c, r, com_stdcall_pop_dwords(c, nargs, method_name));
              },
              label));

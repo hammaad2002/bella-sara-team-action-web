@@ -96,7 +96,7 @@ void rt_cpuid(Cpu* c) {
     c->eax = 0x00000652; /* family 6, model 5, stepping 2 */
     c->ebx = 0;
     c->ecx = 0;
-    c->edx = (1u << 0) | (1u << 4) | (1u << 8) | (1u << 15); /* FPU, TSC, CX8, CMOV */
+    c->edx = (1u << 0) | (1u << 4) | (1u << 8) | (1u << 15) | (1u << 23) | (1u << 25) | (1u << 26); /* FPU, TSC, CX8, CMOV, MMX, SSE, SSE2 */
   } else if (leaf >= 0x80000000u) {
     c->eax = 0x80000000u; /* no extended leaves (no 3DNow!) */
     c->ebx = c->ecx = c->edx = 0;
