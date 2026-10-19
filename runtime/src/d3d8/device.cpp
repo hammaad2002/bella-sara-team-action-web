@@ -1391,7 +1391,7 @@ rt::ComInterface& iface_d3d8_device() {
 }
 
 void fill_device_caps(uint32_t p) {
-  memset(host(p), 0, 304);
+  memset(host(p), 0, 212);
   st32(p + 0, 1);
   st32(p + 4, 0);
   st32(p + 8, 0x00020000);
@@ -1432,8 +1432,8 @@ void fill_device_caps(uint32_t p) {
   st32(p + 148, 8);
   st32(p + 152, 8);
   st32(p + 156, 0x0000013b);
-  st32(p + 160, 0x00000101);  // VS 1.1
-  st32(p + 164, 0x00000101);  // PS 1.1
+  st32(p + 160, 8);
+  st32(p + 164, 6);
   st32(p + 168, 4);
   st32(p + 172, 0);
   st32(p + 176, f32bits(64.0f));
@@ -1441,26 +1441,10 @@ void fill_device_caps(uint32_t p) {
   st32(p + 184, 0x000fffff);
   st32(p + 188, 16);
   st32(p + 192, 255);
-  st32(p + 196, 0xfffe0100);
+  st32(p + 196, 0xfffe0101);
   st32(p + 200, 256);
-  st32(p + 204, 0xffff0100);
+  st32(p + 204, 0xffff0101);
   st32(p + 208, f32bits(8.0f));
-  st32(p + 212, 0x00000001);
-  st32(p + 216, f32bits(0.0f));
-  st32(p + 228, 1);
-  st32(p + 232, 0x00000003);
-  st32(p + 236, 0);
-  st32(p + 240, 24);
-  st32(p + 244, 12);
-  st32(p + 248, 1);
-  st32(p + 252, 0);
-  st32(p + 256, 0);
-  st32(p + 260, 12);
-  st32(p + 264, 0);
-  st32(p + 268, 96);
-  st32(p + 284, 0x0000003f);
-  st32(p + 288, 1);
-  st32(p + 300, 96);
 }
 
 cmd::Stream& d3d8_cmd_stream() { return g_stream; }
