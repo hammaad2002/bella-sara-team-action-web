@@ -146,7 +146,7 @@ int main() {
     check(!g.empty() && info.ok, "bloom: translated ok");
     check(contains(g, "texture(s0, v_t[0].xy)"), "bloom: samples stage 0 with v_t[0]");
     check(contains(g, "clamp(t0 * v0, -1.0, 1.0)"), "bloom: saturating mul into r0");
-    check(contains(g, "o_color = oC0;"), "bloom: writes o_color");
+    check(contains(g, "o_color = r0;"), "bloom: writes o_color");
     check(contains(g, "in vec4 v_t[8];") && contains(g, "in vec4 v_c0;"), "bloom: declares varyings");
     check(!contains(g, "uniform vec4 pc[") && info.nconst == 0, "bloom: no constants referenced");
   }
@@ -278,6 +278,18 @@ int main() {
     std::string g = sm_pixel_glsl({ps10, OP_MUL, dst(kRtemp, 0), src(kRconst, 0, swAll, kD2), src(kRconst, 1, swAll, kX4), psEnd}, &info,
                                     &err);
     check(!g.empty() && info.ok && contains(g, "pc[0] * 0.5") && contains(g, "pc[1] * 4.0"), "ps10: _d2 and _x4 modifiers");
+  }
+
+  // 10. Alpha test discard and u_aref uniform.
+  {
+    PsInfo info{};
+    std::string err;
+    gles::ProgKey key{};
+    key.alpha_func = 5;  // D3DCMP_GREATER (a > u_aref)
+    std::string g = sm_pixel_glsl(bloom_final_pass(), key, &info, &err);
+    check(!g.empty() && info.ok, "alpha test: translated ok");
+    check(contains(g, "uniform float u_aref;"), "alpha test: declares u_aref");
+    check(contains(g, "if (!(a > u_aref)) discard;"), "alpha test: emits discard comparison");
   }
 
   printf(fails ? "sm_ps_test: %d FAILURES\n" : "sm_ps_test: all passed\n", fails);

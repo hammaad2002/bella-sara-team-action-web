@@ -64,6 +64,7 @@ struct PsInfo {
   uint32_t nconst = 0;  // c[] uniform count this shader needs (max index + 1)
   bool ok = false;
 };
+std::string sm_pixel_glsl(const std::vector<uint32_t>& tokens, const ProgKey& k, PsInfo* info, std::string* err);
 std::string sm_pixel_glsl(const std::vector<uint32_t>& tokens, PsInfo* info, std::string* err);
 
 }  // namespace gles

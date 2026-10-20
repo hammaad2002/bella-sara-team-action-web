@@ -84,7 +84,7 @@ std::string ff_vertex_glsl(const ProgKey& k) {
   std::string c1 = has(k, kLocColor1) ? attr(k, kLocColor1) : "vec4(0.0)";
   if (rhw) {
     o("  float w = a0.w == 0.0 ? 1.0 : 1.0 / a0.w;\n");
-    o("  vec2 ndc = vec2((a0.x + 0.5 - u_vp.x) / u_vp.z * 2.0 - 1.0, 1.0 - (a0.y + 0.5 - u_vp.y) / u_vp.w * 2.0);\n");
+    o("  vec2 ndc = (a0.xy + 0.5 - u_vp.xy) / u_vp.zw * 2.0 - 1.0;\n");
     o("  gl_Position = vec4(ndc * w, (a0.z * 2.0 - 1.0) * w, w);\n");
     o("  v_c0 = %s;\n  v_c1 = %s;\n", c0.c_str(), c1.c_str());
     for (int i = 0; i < 8; i++) o("  v_t[%d] = vec4(0.0, 0.0, 0.0, 1.0);\n", i);

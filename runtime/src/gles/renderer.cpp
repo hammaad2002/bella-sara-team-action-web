@@ -120,7 +120,7 @@ Program build_program(const ProgKey& k) {
     if (it == g.shaders.end()) return p;
     PsInfo info;
     std::string err;
-    fs = sm_pixel_glsl(it->second.tokens, &info, &err);
+    fs = sm_pixel_glsl(it->second.tokens, k, &info, &err);
     if (fs.empty()) {
       rt::log(rt::Log::Warn, "GL: cannot translate pixel shader %u: %s (fixed-function fallback)", k.ps_id, err.c_str());
     } else {

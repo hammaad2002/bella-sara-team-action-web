@@ -55,6 +55,7 @@ int sm1_params(uint32_t op) {
 
 struct Translator {
   const std::vector<uint32_t>& t;
+  const ProgKey& key;
   std::string body, err;
   std::map<uint32_t, std::string> defs;  // c# -> vec4 literal (ps_1_x constants max out at c0..c7)
   uint32_t max_const = 0;
@@ -62,9 +63,10 @@ struct Translator {
   bool texin[8] = {};    // t# referenced anywhere (varying v_t[0..7] declared when set)
   bool stage[8] = {};    // stages sampled by tex/texm3x2tex (sampler2D s# declared when set)
   bool vin[2] = {};      // v0 diffuse / v1 specular colour inputs read
+  bool colorout = false; // oC0 explicitly written
   int m3x2row = -1;      // t# written by the open texm3x2pad, -1 when none
 
-  Translator(const std::vector<uint32_t>& tokens) : t(tokens) {}
+  Translator(const std::vector<uint32_t>& tokens, const ProgKey& k) : t(tokens), key(k) {}
 
   std::string reg_name(uint32_t tok) {
     uint32_t type = reg_type(tok), n = reg_num(tok);
@@ -171,6 +173,7 @@ struct Translator {
           return d;
         }
         d.name = "oC0";
+        colorout = true;
         break;
       case R_TEXTURE:
         if (d.index > 7) {
@@ -414,6 +417,7 @@ struct Translator {
     if (info.nconst) s += "uniform vec4 pc[" + std::to_string(info.nconst) + "];\n";
     for (int k = 0; k < 8; k++)
       if (stage[k]) s += "uniform sampler2D s" + std::to_string(k) + ";\n";
+    if (key.alpha_func) s += "uniform float u_aref;\n";
     s += "out vec4 o_color;\n";
     s += "void main() {\n";
     for (auto& [n, lit] : defs) s += "  const vec4 cdef" + std::to_string(n) + " = " + lit + ";\n";
@@ -425,21 +429,32 @@ struct Translator {
     }
     s += "  vec4 oC0 = vec4(0.0);\n";
     s += body;
-    s += "  o_color = " + std::string(temps[0] ? "r0" : "oC0") + ";\n}\n";
+    std::string out_col = colorout ? "oC0" : temps[0] ? "r0" : "oC0";
+    if (key.alpha_func) {
+      static const char* cmp[9] = {"", "false", "a < u_aref", "a == u_aref", "a <= u_aref", "a > u_aref", "a != u_aref", "a >= u_aref", "true"};
+      s += "  float a = floor(" + out_col + ".a * 255.0 + 0.5);\n";
+      s += "  if (!(" + std::string(cmp[key.alpha_func < 9 ? key.alpha_func : 8]) + ")) discard;\n";
+    }
+    s += "  o_color = " + out_col + ";\n}\n";
     return s;
   }
 };
 
 }  // namespace
 
-std::string sm_pixel_glsl(const std::vector<uint32_t>& tokens, PsInfo* info, std::string* err) {
+std::string sm_pixel_glsl(const std::vector<uint32_t>& tokens, const ProgKey& k, PsInfo* info, std::string* err) {
   info->ok = false;
-  Translator tr(tokens);
+  Translator tr(tokens, k);
   if (!tr.run(info)) {
     *err = tr.err;
     return "";
   }
   return tr.glsl(*info);
+}
+
+std::string sm_pixel_glsl(const std::vector<uint32_t>& tokens, PsInfo* info, std::string* err) {
+  ProgKey k{};
+  return sm_pixel_glsl(tokens, k, info, err);
 }
 
 }  // namespace gles
