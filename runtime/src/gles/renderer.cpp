@@ -72,6 +72,7 @@ struct Program {
   GLint samplers[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
   uint32_t nconst = 0;     // c[] rows for the translated vertex shader
   uint32_t nconst_pc = 0;  // pc[] rows for the translated pixel shader
+  std::string vs, fs;
   bool ok = false;
 };
 
@@ -172,6 +173,8 @@ Program build_program(const ProgKey& k) {
     if (p.samplers[i] >= 0) glUniform1i(p.samplers[i], i);
   }
   p.ok = true;
+  p.vs = vs;
+  p.fs = fs;
   if (rt::trace_enabled("shaders")) rt::log(rt::Log::Debug, "GL: new program\n--- vs ---\n%s--- fs ---\n%s", vs.c_str(), fs.c_str());
   return p;
 }
@@ -301,7 +304,8 @@ void apply_state(bool rhw) {
     glPolygonOffset(slope, bias * 16777216.0f);
   }
   // Culling (render targets are stored D3D-style, so D3D's clockwise front faces are GL's CCW).
-  uint32_t cull = rs[22];
+  // RHW primitives are screen-space 2D and never culled in D3D8.
+  uint32_t cull = rhw ? 1 : rs[22];
   set_cap(GL_CULL_FACE, cull == 2 || cull == 3 ? 1 : 0, gs.cull);
   if (cull == 2 || cull == 3) {
     int cf = cull == 3 ? GL_BACK : GL_FRONT;
@@ -511,7 +515,7 @@ void build_key(ProgKey& k, uint32_t prim) {
   int n = 0;
   for (; n < 8; n++) {
     const auto& ts = g.st.tss[n];
-    if (ts[1] == 1) break;  // COLOROP DISABLE ends the cascade
+    if (ts[1] == 1 && !k.ps_id) break;  // COLOROP DISABLE ends the cascade
     k.cop[n] = (uint8_t)ts[1];
     k.ca[n][0] = (uint8_t)ts[26], k.ca[n][1] = (uint8_t)ts[2], k.ca[n][2] = (uint8_t)ts[3];
     k.aop[n] = (uint8_t)ts[4];
@@ -541,7 +545,7 @@ void build_key(ProgKey& k, uint32_t prim) {
     // vertex-side key material (ntc/tc_*), now bind every bound texture for the translated samplers.
     for (int i = 0; i < 8; i++) {
       auto it = g.textures[i] ? g.tex.find(g.textures[i]) : g.tex.end();
-      k.tex_kind[i] = it == g.tex.end() ? 0 : it->second.target == GL_TEXTURE_CUBE_MAP ? 2 : 1;
+      k.tex_kind[i] = it == g.tex.end() ? 1 : it->second.target == GL_TEXTURE_CUBE_MAP ? 2 : 1;
     }
     k.nstages = 8;
   }
@@ -770,6 +774,20 @@ void draw(uint32_t prim, uint32_t start, uint32_t count, bool indexed, int32_t b
       const float* f = (const float*)up_vdata;
       const uint32_t* u = (const uint32_t*)up_vdata;
       rt::log(rt::Log::Info, "  v0: %g %g %g %g | %08x | %g %g", f[0], f[1], f[2], f[3], u[4], f[5], f[6]);
+    } else if (!up) {
+      const StreamBinding& sb = g.streams[0];
+      auto it = g.bufs.find(sb.id);
+      if (it != g.bufs.end() && sb.stride >= 24) {
+        size_t off = (size_t)sb.offset + (size_t)start * sb.stride;
+        for (uint32_t vi = 0; vi < std::min<uint32_t>(count + 2, 4); vi++) {
+          size_t voff = off + (size_t)vi * sb.stride;
+          if (voff + sb.stride <= it->second.shadow.size()) {
+            const float* f = (const float*)(it->second.shadow.data() + voff);
+            const uint32_t* u = (const uint32_t*)(it->second.shadow.data() + voff);
+            rt::log(rt::Log::Info, "  v%u buf: pos=(%g %g %g %g) col=%08x uv=(%g %g)", vi, f[0], f[1], f[2], f[3], u[4], f[5], f[6]);
+          }
+        }
+      }
     }
     GLenum e = glGetError();
     if (e) rt::log(rt::Log::Warn, "GL error %04x before draw", e);

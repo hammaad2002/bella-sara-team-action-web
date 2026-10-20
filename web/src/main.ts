@@ -30,9 +30,9 @@ const ENGINE_URL = DEV_ENGINE ? "/dev-engine/bellasara.js" : "/engine/bellasara_
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const prefs = loadPrefs();
 try {
-  localStorage.setItem("shrek2.prefs", JSON.stringify(prefs));
+  localStorage.setItem("bella.prefs", JSON.stringify(prefs));
 } catch {
-  // tools/web-pad-test.mjs reads this legacy key; ignore when storage is blocked.
+  // Ignore when storage is blocked.
 }
 const pads = new Gamepads();
 const help = new Help(prefs);
@@ -57,8 +57,6 @@ interface DevState {
 }
 const dev: DevState = { frames: 0, captures: {}, log: [], state: "init" };
 (window as unknown as { __bella: DevState }).__bella = dev;
-// tools/web-pad-test.mjs still reads `window.__shrek2` for frame-synced pad scripts.
-(window as unknown as { __shrek2: DevState }).__shrek2 = dev;
 
 function setState(s: string, text: string) {
   dev.state = s;

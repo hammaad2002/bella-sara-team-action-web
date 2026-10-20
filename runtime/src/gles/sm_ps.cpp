@@ -425,7 +425,7 @@ struct Translator {
     }
     s += "  vec4 oC0 = vec4(0.0);\n";
     s += body;
-    s += "  o_color = oC0;\n}\n";
+    s += "  o_color = " + std::string(temps[0] ? "r0" : "oC0") + ";\n}\n";
     return s;
   }
 };

@@ -32,7 +32,7 @@ const t0 = Date.now();
 const stamp = () => ((Date.now() - t0) / 1000).toFixed(1).padStart(6);
 page.on("console", (m) => {
   const t = m.text();
-  if (/\[(fatal|error|warn)\]|error|Error|exception/i.test(t) || m.type() === "error") console.log(`${stamp()} console.${m.type()}: ${t.slice(0, 400)}`);
+  console.log(`${stamp()} console.${m.type()}: ${t}`);
 });
 page.on("pageerror", (e) => console.log(`${stamp()} pageerror: ${e.message}\n${e.stack ?? ""}`));
 page.on("crash", () => console.log(`${stamp()} page crashed`));
@@ -91,8 +91,12 @@ while (Date.now() < deadline) {
     if (expectedCaps.length > 0 && expectedCaps.every((k) => saved.has(k)) && s.frames >= minFrames) break;
     else if (expectedCaps.length === 0 && minFrames > 0 && s.frames >= minFrames) break;
   }
-  if (s.state === "error") break;
+  if (s.state === "error") {
+    console.log(`${stamp()} loop break: s.state === "error"`);
+    break;
+  }
 }
+console.log(`${stamp()} finished loop: deadline_passed=${Date.now() >= deadline}`);
 const engineLog = await page.evaluate(() => window.__bella.log.join("\n"));
 writeFileSync("work/web-engine.log", engineLog);
 console.log("---- engine log (tail; full log in work/web-engine.log) ----\n" + engineLog.split("\n").slice(-40).join("\n"));

@@ -83,7 +83,6 @@ export class Help {
     const action = (id: number) => ACTIONS.find((a) => a.id === id)?.name ?? "";
     const mouse: [string, string][] = [];
     if (s.mouseEnabled) mouse.push(["Move the mouse", "Turn the camera (click the game first to capture the mouse)"]);
-    if (s.mouseWheel) mouse.push(["Wheel", "Next / previous character"]);
     ["Left button", "Right button", "Middle button"].forEach((b, i) => {
       if (s.mouseButtons[i]) mouse.push([b, action(s.mouseButtons[i])]);
     });
@@ -100,7 +99,6 @@ export class Help {
     ];
     if (alias) other.push([keyLabel(alias), "Works as Esc where the browser keeps Esc (fullscreen, captured mouse)"]);
     other.push(["Fullscreen", "Button at the top right of the game (move the mouse to show it); in Chrome and Edge hold Esc to leave"]);
-    other.push(["Players 2–4", "Controllers join in the order they are connected; keyboard keys for other players are in Settings"]);
     list("help-other", other);
   }
 }

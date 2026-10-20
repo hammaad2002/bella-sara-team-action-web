@@ -898,19 +898,19 @@ HLE_STDCALL_AS(kDll, FSOUND_Stream_Open, "_FSOUND_Stream_Open@16", 4) {
   return h;
 }
 
-// FSOUND_Stream_PlayEx(stream, channel, dsp, startpaused) - same channel model as PlaySoundEx.
+// FSOUND_Stream_PlayEx(channel, stream, dsp, startpaused) - same channel model as PlaySoundEx.
 HLE_STDCALL_AS(kDll, FSOUND_Stream_PlayEx, "_FSOUND_Stream_PlayEx@16", 4) {
   if (!g_inited) {
     set_error(kErrMemory);
     return (uint32_t)-1;
   }
-  auto* st = stream_by(arg(c, 0));
+  auto* st = stream_by(arg(c, 1));
   if (!st || st->subs.empty()) {
     set_error(kErrMemory);
     return (uint32_t)-1;
   }
   auto smp = st->sentence_smp ? st->sentence_smp : st->subs[0];
-  const int ch = start_channel(smp, (int)arg(c, 1), arg(c, 3) != 0);
+  const int ch = start_channel(smp, (int)arg(c, 0), arg(c, 3) != 0);
   if (ch >= 0) {
     if ((st->mode & (kLoopNormal | kLoopBidi)) != 0 && smp->loop_end <= smp->loop_start) {
       if (auto chan = channel_shared(ch)) {
@@ -924,7 +924,7 @@ HLE_STDCALL_AS(kDll, FSOUND_Stream_PlayEx, "_FSOUND_Stream_PlayEx@16", 4) {
     }
     st->active_ch = ch;
     if (trace_enabled("audio"))
-      log(Log::Hle, "fmod: Stream_PlayEx ch=%d stream=%08x paused=%u", ch, arg(c, 0),
+      log(Log::Hle, "fmod: Stream_PlayEx ch=%d stream=%08x paused=%u", ch, arg(c, 1),
           arg(c, 3) != 0);
   }
   return ch < 0 ? (uint32_t)-1 : (uint32_t)ch;

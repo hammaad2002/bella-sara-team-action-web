@@ -211,7 +211,9 @@ uint32_t surf_GetDevice(Cpu* c, ComObject* self) {
   (void)self;
   uint32_t out = arg(c, 1);
   if (out < kNullGuardEnd) return d3d::D3DERR_INVALIDCALL;
-  st32(out, ld32(0x7653b0u));
+  uint32_t dev_ptr = ld32(0x7653b0u);
+  if (auto* dev = com_object(dev_ptr)) com_AddRef(c, dev);
+  st32(out, dev_ptr);
   return S_OK;
 }
 

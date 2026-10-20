@@ -89,10 +89,10 @@ export class Input {
     if (down && e.key.length === 1 && code === e.code) this.engine._web_key(2, 0, 0, e.key.charCodeAt(0));
   }
 
-  /** Window-relative coordinates in the game's 640x480 client space. */
+  /** Window-relative coordinates in the game's 800x600 client space. */
   private pos(e: MouseEvent): [number, number] {
     const r = this.canvas.getBoundingClientRect();
-    return [Math.round(((e.clientX - r.left) / r.width) * 640), Math.round(((e.clientY - r.top) / r.height) * 480)];
+    return [Math.round(((e.clientX - r.left) / r.width) * 800), Math.round(((e.clientY - r.top) / r.height) * 600)];
   }
 
   get pointerLocked(): boolean {

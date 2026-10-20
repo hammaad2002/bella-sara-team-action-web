@@ -730,7 +730,7 @@ void execute(const uint32_t* words, size_t n) {
         g.st.viewport = v;
         // D3D8 CreateDevice may record a desktop-sized back buffer when presentation parameters leave
         // BackBufferWidth/Height at zero; the first full-surface viewport still matches the real buffer.
-        if (v.x == 0 && v.y == 0 && v.w > 0 && v.h > 0 && (v.w != g.bbw || v.h != g.bbh)) {
+        if (g.frames == 0 && g.rt[0].kind == 1 && v.x == 0 && v.y == 0 && v.w > 0 && v.h > 0 && (v.w != g.bbw || v.h != g.bbh)) {
           ensure_backbuffer(v.w, v.h);
           if (rt::trace_enabled("frames"))
             rt::log(rt::Log::Info, "GL: back buffer resized to %ux%u from viewport", v.w, v.h);

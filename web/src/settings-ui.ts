@@ -5,15 +5,6 @@
 import { connectedPads, padName, readPad, type Gamepads } from "./gamepads.ts";
 import { KEYS } from "./keys.ts";
 import { DEFAULT_PREFS, savePrefs, type Prefs } from "./prefs.ts";
-
-/** Legacy key read by tools/web-pad-test.mjs. */
-function mirrorLegacyPrefs(p: Prefs): void {
-  try {
-    localStorage.setItem("shrek2.prefs", JSON.stringify(p));
-  } catch {
-    // Private windows may refuse storage.
-  }
-}
 import { loadRegistry, saveRegistry } from "./registry.ts";
 import {
   ACTIONS, GAME_KEYS, MANUAL_KEYS, OPT_CLIPPING, OPT_SHADOWS, PLAYERS, RESOLUTIONS, bindKey, bindPad, defaultSettings,
@@ -106,7 +97,6 @@ export class SettingsPanel {
       this.settings = defaultSettings();
       Object.assign(this.prefs, DEFAULT_PREFS);
       savePrefs(this.prefs);
-      mirrorLegacyPrefs(this.prefs);
       this.changed();
     });
     window.addEventListener("keydown", (e) => this.onKey(e), true);
@@ -235,7 +225,6 @@ export class SettingsPanel {
       if (e.code !== "Escape") {
         this.prefs.pauseAlias = e.code;
         savePrefs(this.prefs);
-        mirrorLegacyPrefs(this.prefs);
         // The substitute Esc cannot also be a game key.
         for (const row of this.settings.keys) {
           const dik = dikForCode(e.code);

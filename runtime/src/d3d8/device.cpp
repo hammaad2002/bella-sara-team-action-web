@@ -1294,11 +1294,24 @@ uint32_t create_d3d8_device(Cpu* c, ComObject*) {
   return S_OK;
 }
 
+static uint32_t dev_Release(Cpu* c, ComObject* self) {
+  int32_t r = --self->refs;
+  if (r <= 0) {
+    auto* dev = D(self);
+    if (dev && dev->guest_ptr && dev->guest_ptr == ld32(0x7653b0u)) {
+      self->refs = 1;
+      return 1;
+    }
+    delete self;
+  }
+  return (uint32_t)std::max<int32_t>(r, 0);
+}
+
 rt::ComInterface& iface_d3d8_device() {
   static ComInterface i("IDirect3DDevice8",
                         {{"QueryInterface", 2, com_QueryInterface_none},
                          {"AddRef", 0, com_AddRef},
-                         {"Release", 0, com_Release},
+                         {"Release", 0, dev_Release},
                          {"TestCooperativeLevel", 0, TestCooperativeLevel},
                          {"GetAvailableTextureMem", 0, GetAvailableTextureMem},
                          {"ResourceManagerDiscardBytes", 1, ResourceManagerDiscardBytes},
