@@ -68,12 +68,7 @@ void flush_stream(bool present) {
 
 class Device8;
 
-struct StreamBinding {
-  uint32_t gl_buf = 0;
-  uint32_t guest_vb = 0;
-  uint32_t offset = 0;
-  uint32_t stride = 0;
-};
+using StreamBinding = StreamBinding8;
 
 class Device8 : public ComObject {
  public:
@@ -847,7 +842,7 @@ uint32_t EndStateBlock(Cpu* c, ComObject* self) {
   StateBlock8* sb = d->recording;
   if (!sb) return d3d::D3DERR_INVALIDCALL;
   d->recording = nullptr;
-  sb->snapshot = d->st;
+  capture_state_block8(sb);
   st32(arg(c, 1), wrap_state_block8(sb));
   return S_OK;
 }
@@ -875,8 +870,8 @@ uint32_t DeleteStateBlock(Cpu* c, ComObject*) {
 uint32_t CreateStateBlock(Cpu* c, ComObject* self) {
   auto* sb = new StateBlock8();
   sb->device = self;
-  sb->snapshot = D(self)->st;
   sb->recorded = false;
+  capture_state_block8(sb);
   st32(arg(c, 2), wrap_state_block8(sb));
   return S_OK;
 }
@@ -1482,15 +1477,74 @@ void upload_surface8(Surface8* s) {
 void apply_state_block8(StateBlock8* sb) {
   Device8* d = static_cast<Device8*>(sb->device);
   if (!d) return;
-  for (uint32_t i = 0; i < 256; i++) set_rs(d, i, sb->snapshot.rs[i]);
+  for (uint32_t i = 0; i < 256; i++) {
+    if (d->st.rs[i] != sb->snapshot.rs[i]) set_rs(d, i, sb->snapshot.rs[i]);
+  }
   for (uint32_t t = 0; t < 8; t++)
-    for (uint32_t k = 0; k < 33; k++) set_tss(d, t, k, sb->snapshot.tss[t][k]);
+    for (uint32_t k = 0; k < 33; k++) {
+      if (d->st.tss[t][k] != sb->snapshot.tss[t][k]) set_tss(d, t, k, sb->snapshot.tss[t][k]);
+    }
   for (auto& [k, m] : sb->snapshot.transforms) set_transform(d, k, m);
   set_viewport(d, sb->snapshot.viewport);
   set_material(d, sb->snapshot.material);
   for (auto& [i, l] : sb->snapshot.lights) set_light(d, i, l);
   for (auto& [i, e] : sb->snapshot.light_enable) light_enable(d, i, e);
   d->st = sb->snapshot;
+
+  for (uint32_t stage = 0; stage < 8; stage++) {
+    if (d->bound_tex[stage] != sb->bound_tex[stage] || d->bound_tex_guest[stage] != sb->bound_tex_guest[stage]) {
+      d->bound_tex[stage] = sb->bound_tex[stage];
+      d->bound_tex_guest[stage] = sb->bound_tex_guest[stage];
+      rec().op(cmd::OpSetTexture, {stage, d->bound_tex[stage]});
+    }
+  }
+
+  for (uint32_t i = 0; i < 16; i++) {
+    const auto& s = sb->streams[i];
+    if (d->streams[i].gl_buf != s.gl_buf || d->streams[i].guest_vb != s.guest_vb ||
+        d->streams[i].offset != s.offset || d->streams[i].stride != s.stride) {
+      d->streams[i] = s;
+      rec().op(cmd::OpSetStream, {i, s.gl_buf, s.offset, s.stride});
+    }
+  }
+
+  if (d->index_gl != sb->index_gl || d->index_fmt != sb->index_fmt ||
+      d->index_guest != sb->index_guest || d->index_base != sb->index_base) {
+    d->index_gl = sb->index_gl;
+    d->index_fmt = sb->index_fmt;
+    d->index_guest = sb->index_guest;
+    d->index_base = sb->index_base;
+    rec().op(cmd::OpSetIndices, {d->index_gl, d->index_fmt == d3d::FMT_INDEX32 ? 32u : 16u});
+  }
+
+  if (d->vs_f != sb->vs_f) {
+    uint32_t first = 0, last = 255;
+    while (first < 256 && memcmp(&d->vs_f[first * 4], &sb->vs_f[first * 4], 16) == 0) first++;
+    while (last > first && memcmp(&d->vs_f[last * 4], &sb->vs_f[last * 4], 16) == 0) last--;
+    if (first <= last) {
+      set_vsc(d, first, &sb->vs_f[first * 4], last - first + 1);
+    }
+  }
+
+  if (d->ps_f != sb->ps_f) {
+    uint32_t first = 0, last = 223;
+    while (first < 224 && memcmp(&d->ps_f[first * 4], &sb->ps_f[first * 4], 16) == 0) first++;
+    while (last > first && memcmp(&d->ps_f[last * 4], &sb->ps_f[last * 4], 16) == 0) last--;
+    if (first <= last) {
+      set_psc(d, first, &sb->ps_f[first * 4], last - first + 1);
+    }
+  }
+
+  bool fvf_changed = (d->fvf != sb->fvf);
+
+  d->vs_handle = sb->vs_handle;
+  d->ps_handle = sb->ps_handle;
+  d->fvf = sb->fvf;
+  d->st.fvf = sb->fvf;
+
+  if (fvf_changed || (!d->vs_handle && d->fvf)) {
+    emit_layout(fvf_elements(d->fvf));
+  }
   emit_shaders(d);
 }
 
@@ -1498,6 +1552,18 @@ void capture_state_block8(StateBlock8* sb) {
   Device8* d = static_cast<Device8*>(sb->device);
   if (!d) return;
   sb->snapshot = d->st;
+  memcpy(sb->bound_tex, d->bound_tex, sizeof(d->bound_tex));
+  memcpy(sb->bound_tex_guest, d->bound_tex_guest, sizeof(d->bound_tex_guest));
+  memcpy(sb->streams, d->streams, sizeof(d->streams));
+  sb->fvf = d->fvf;
+  sb->vs_handle = d->vs_handle;
+  sb->ps_handle = d->ps_handle;
+  sb->index_gl = d->index_gl;
+  sb->index_fmt = d->index_fmt;
+  sb->index_guest = d->index_guest;
+  sb->index_base = d->index_base;
+  sb->vs_f = d->vs_f;
+  sb->ps_f = d->ps_f;
 }
 
 void verify_iface_nargs(const char* label, ComInterface& iface, const sdk_nargs::Method* exp, size_t nexp) {

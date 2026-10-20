@@ -1,6 +1,7 @@
 // Shared declarations for the Bella Sara Direct3D 8 HLE (runtime/src/d3d8/).
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -73,11 +74,27 @@ struct Shader8 : public rt::ComObject {
   uint32_t program_id = 0;
 };
 
+struct StreamBinding8 {
+  uint32_t gl_buf = 0;
+  uint32_t guest_vb = 0;
+  uint32_t offset = 0;
+  uint32_t stride = 0;
+};
+
 struct StateBlock8 : public rt::ComObject {
   const char* type_name() const override { return "D3D8StateBlock"; }
   rt::ComObject* device = nullptr;
   d3d::State snapshot;
   bool recorded = false;
+  uint32_t bound_tex[8] = {};
+  uint32_t bound_tex_guest[8] = {};
+  StreamBinding8 streams[16] = {};
+  uint32_t fvf = 0;
+  uint32_t vs_handle = 0, ps_handle = 0;
+  uint32_t index_gl = 0, index_fmt = d3d::FMT_INDEX16;
+  uint32_t index_guest = 0, index_base = 0;
+  std::array<float, 256 * 4> vs_f{};
+  std::array<float, 224 * 4> ps_f{};
 };
 
 struct Surface8 : public rt::ComObject {
