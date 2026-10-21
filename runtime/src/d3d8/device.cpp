@@ -225,6 +225,50 @@ void set_indices(Device8* d, uint32_t guest_ib) {
   rec().op(cmd::OpSetIndices, {d->index_gl, d->index_fmt == d3d::FMT_INDEX32 ? 32u : 16u});
 }
 
+void set_texture8(Device8* d, uint32_t stage, uint32_t ptr) {
+  if (ptr) {
+    if (auto* tex = dynamic_cast<Texture8*>(com_object(ptr))) texture_flush_dirty(tex);
+  }
+  uint32_t id = ptr ? guest_texture_gl(ptr) : 0;
+  if (stage < 8) {
+    d->bound_tex[stage] = id;
+    d->bound_tex_guest[stage] = ptr;
+  }
+  rec().op(cmd::OpSetTexture, {stage, id});
+}
+
+void set_stream8(Device8* d, uint32_t i, uint32_t ptr, uint32_t stride) {
+  if (i >= 16) return;
+  d->streams[i].gl_buf = ptr ? guest_vertex_buffer_gl(ptr) : 0;
+  d->streams[i].guest_vb = ptr;
+  d->streams[i].offset = 0;
+  d->streams[i].stride = stride;
+  rec().op(cmd::OpSetStream, {i, d->streams[i].gl_buf, 0u, stride});
+}
+
+void set_indices8(Device8* d, uint32_t ptr, uint32_t base) {
+  d->index_guest = ptr;
+  d->index_base = base;
+  set_indices(d, ptr);
+}
+
+struct RecOp8 {
+  uint32_t kind, a, b;
+  std::vector<uint32_t> data;
+};
+std::map<StateBlock8*, std::vector<RecOp8>> g_recorded8;
+
+enum RecKind8 : uint32_t {
+  RK8_RS, RK8_TSS, RK8_TEX, RK8_XFORM, RK8_VP, RK8_MAT, RK8_LIGHT, RK8_LIGHTEN,
+  RK8_CLIP, RK8_VS, RK8_PS, RK8_VSC, RK8_PSC, RK8_STREAM, RK8_IND
+};
+
+bool recording8(Device8* d, RecOp8 op) {
+  if (!d->recording) return false;
+  g_recorded8[d->recording].push_back(std::move(op));
+  return true;
+}
+
 uint32_t prim_vertex_count(uint32_t prim, uint32_t n) {
   switch (prim) {
     case 1: return n;
@@ -586,7 +630,17 @@ uint32_t Clear(Cpu* c, ComObject*) {
 }
 
 uint32_t SetTransform(Cpu* c, ComObject* self) {
-  set_transform(D(self), arg(c, 1), read_mat(arg(c, 2)));
+  Device8* d = D(self);
+  uint32_t s = arg(c, 1);
+  d3d::Mat4 m = read_mat(arg(c, 2));
+  if (d->recording) {
+    RecOp8 op{RK8_XFORM, s, 0, {}};
+    op.data.resize(16);
+    memcpy(op.data.data(), m.m, 64);
+    g_recorded8[d->recording].push_back(std::move(op));
+    return S_OK;
+  }
+  set_transform(d, s, m);
   return S_OK;
 }
 
@@ -596,7 +650,14 @@ uint32_t GetTransform(Cpu* c, ComObject* self) {
 }
 
 uint32_t SetViewport(Cpu* c, ComObject* self) {
-  set_viewport(D(self), read_vp(arg(c, 1)));
+  Device8* d = D(self);
+  const uint32_t* p = (const uint32_t*)host(arg(c, 1));
+  if (d->recording) {
+    RecOp8 op{RK8_VP, 0, 0, {p[0], p[1], p[2], p[3], p[4], p[5]}};
+    g_recorded8[d->recording].push_back(std::move(op));
+    return S_OK;
+  }
+  set_viewport(d, read_vp(arg(c, 1)));
   return S_OK;
 }
 
@@ -613,7 +674,9 @@ uint32_t GetViewport(Cpu* c, ComObject* self) {
 }
 
 uint32_t SetRenderState(Cpu* c, ComObject* self) {
-  set_rs(D(self), arg(c, 1), arg(c, 2));
+  Device8* d = D(self);
+  if (recording8(d, {RK8_RS, arg(c, 1), arg(c, 2), {}})) return S_OK;
+  set_rs(d, arg(c, 1), arg(c, 2));
   return S_OK;
 }
 
@@ -675,20 +738,9 @@ uint32_t CreateVertexBuffer(Cpu* c, ComObject*) {
 uint32_t SetTexture(Cpu* c, ComObject* self) {
   Device8* d = D(self);
   uint32_t stage = arg(c, 1), ptr = arg(c, 2);
-  if (ptr) {
-    if (auto* tex = dynamic_cast<Texture8*>(com_object(ptr))) texture_flush_dirty(tex);
-  }
-  uint32_t id = ptr ? guest_texture_gl(ptr) : 0;
-  if (ptr && !id && com_object(ptr)) {
-    log(Log::Warn, "D3D8 SetTexture: invalid texture %08x", ptr);
-    return d3d::D3DERR_INVALIDCALL;
-  }
   if (ptr && !com_object(ptr)) return d3d::D3DERR_INVALIDCALL;
-  if (stage < 8) {
-    d->bound_tex[stage] = id;
-    d->bound_tex_guest[stage] = ptr;
-  }
-  rec().op(cmd::OpSetTexture, {stage, id});
+  if (recording8(d, {RK8_TEX, stage, ptr, {}})) return S_OK;
+  set_texture8(d, stage, ptr);
   return S_OK;
 }
 
@@ -697,21 +749,20 @@ uint32_t SetStreamSource(Cpu* c, ComObject* self) {
   uint32_t i = arg(c, 1), ptr = arg(c, 2), stride = arg(c, 3);
   if (ptr && !com_object(ptr)) return d3d::D3DERR_INVALIDCALL;
   if (i >= 16) return d3d::D3DERR_INVALIDCALL;
-  d->streams[i].gl_buf = ptr ? guest_vertex_buffer_gl(ptr) : 0;
-  d->streams[i].guest_vb = ptr;
-  d->streams[i].offset = 0;
-  d->streams[i].stride = stride;
-  rec().op(cmd::OpSetStream, {i, d->streams[i].gl_buf, 0u, stride});
+  if (recording8(d, {RK8_STREAM, i, ptr, {stride}})) return S_OK;
+  set_stream8(d, i, ptr, stride);
   return S_OK;
 }
 
 uint32_t SetVertexShader(Cpu* c, ComObject* self) {
   Device8* d = D(self);
   uint32_t token = arg(c, 1);
+  if (recording8(d, {RK8_VS, token, 0, {}})) return S_OK;
   // D3D8: shader handles have bit 31 set; values with bit 31 clear are FVF codes.
   if (!(token & 0x80000000u)) {
     set_fvf(d, token);
     d->vs_handle = 0;
+    emit_shaders(d);
   } else {
     d->vs_handle = token;
     emit_shaders(d);
@@ -728,7 +779,9 @@ uint32_t GetVertexShader(Cpu* c, ComObject* self) {
 
 uint32_t SetPixelShader(Cpu* c, ComObject* self) {
   Device8* d = D(self);
-  d->ps_handle = arg(c, 1);
+  uint32_t handle = arg(c, 1);
+  if (recording8(d, {RK8_PS, handle, 0, {}})) return S_OK;
+  d->ps_handle = handle;
   emit_shaders(d);
   return S_OK;
 }
@@ -741,7 +794,16 @@ uint32_t GetPixelShader(Cpu* c, ComObject* self) {
 }
 
 uint32_t SetVertexShaderConstant(Cpu* c, ComObject* self) {
-  set_vsc(D(self), arg(c, 1), (const float*)host(arg(c, 2)), arg(c, 3));
+  Device8* d = D(self);
+  uint32_t start = arg(c, 1), count = arg(c, 3);
+  if (d->recording) {
+    RecOp8 op{RK8_VSC, start, count, {}};
+    op.data.resize(count * 4);
+    memcpy(op.data.data(), host(arg(c, 2)), count * 16);
+    g_recorded8[d->recording].push_back(std::move(op));
+    return S_OK;
+  }
+  set_vsc(d, start, (const float*)host(arg(c, 2)), count);
   return S_OK;
 }
 
@@ -753,9 +815,18 @@ uint32_t GetVertexShaderConstant(Cpu* c, ComObject* self) {
 }
 
 uint32_t SetPixelShaderConstant(Cpu* c, ComObject* self) {
+  Device8* d = D(self);
+  uint32_t start = arg(c, 1), count = arg(c, 3);
   uint32_t data = arg(c, 2);
   if (data < kNullGuardEnd) return d3d::D3DERR_INVALIDCALL;
-  set_psc(D(self), arg(c, 1), (const float*)host(data), arg(c, 3));
+  if (d->recording) {
+    RecOp8 op{RK8_PSC, start, count, {}};
+    op.data.resize(count * 4);
+    memcpy(op.data.data(), host(data), count * 16);
+    g_recorded8[d->recording].push_back(std::move(op));
+    return S_OK;
+  }
+  set_psc(d, start, (const float*)host(data), count);
   return S_OK;
 }
 
@@ -777,9 +848,17 @@ uint32_t MultiplyTransform(Cpu* c, ComObject* self) {
 }
 
 uint32_t SetMaterial(Cpu* c, ComObject* self) {
+  Device8* d = D(self);
+  if (d->recording) {
+    RecOp8 op{RK8_MAT, 0, 0, {}};
+    op.data.resize(17);
+    memcpy(op.data.data(), host(arg(c, 1)), 68);
+    g_recorded8[d->recording].push_back(std::move(op));
+    return S_OK;
+  }
   d3d::Material m;
   memcpy(&m, host(arg(c, 1)), 68);
-  set_material(D(self), m);
+  set_material(d, m);
   return S_OK;
 }
 
@@ -789,11 +868,20 @@ uint32_t GetMaterial(Cpu* c, ComObject* self) {
 }
 
 uint32_t SetLight(Cpu* c, ComObject* self) {
+  Device8* d = D(self);
+  uint32_t idx = arg(c, 1), p = arg(c, 2);
+  if (d->recording) {
+    RecOp8 op{RK8_LIGHT, idx, 0, {}};
+    op.data.resize(26);
+    op.data[0] = ld32(p);
+    memcpy(op.data.data() + 1, host(p + 4), 25 * 4);
+    g_recorded8[d->recording].push_back(std::move(op));
+    return S_OK;
+  }
   d3d::Light l;
-  uint32_t p = arg(c, 2);
   l.type = ld32(p);
   memcpy(&l.diffuse, host(p + 4), 25 * 4);
-  set_light(D(self), arg(c, 1), l);
+  set_light(d, idx, l);
   return S_OK;
 }
 
@@ -806,7 +894,9 @@ uint32_t GetLight(Cpu* c, ComObject* self) {
 }
 
 uint32_t LightEnable(Cpu* c, ComObject* self) {
-  light_enable(D(self), arg(c, 1), arg(c, 2) != 0);
+  Device8* d = D(self);
+  if (recording8(d, {RK8_LIGHTEN, arg(c, 1), arg(c, 2), {}})) return S_OK;
+  light_enable(d, arg(c, 1), arg(c, 2) != 0);
   return S_OK;
 }
 
@@ -818,7 +908,14 @@ uint32_t GetLightEnable(Cpu* c, ComObject* self) {
 }
 
 uint32_t SetClipPlane(Cpu* c, ComObject* self) {
-  set_clip_plane(D(self), arg(c, 1), (const float*)host(arg(c, 2)));
+  Device8* d = D(self);
+  if (d->recording) {
+    const uint32_t* p = (const uint32_t*)host(arg(c, 2));
+    RecOp8 op{RK8_CLIP, arg(c, 1), 0, {p[0], p[1], p[2], p[3]}};
+    g_recorded8[d->recording].push_back(std::move(op));
+    return S_OK;
+  }
+  set_clip_plane(d, arg(c, 1), (const float*)host(arg(c, 2)));
   return S_OK;
 }
 
@@ -834,6 +931,7 @@ uint32_t BeginStateBlock(Cpu*, ComObject* self) {
   sb->device = self;
   sb->recorded = true;
   D(self)->recording = sb;
+  g_recorded8[sb].clear();
   return S_OK;
 }
 
@@ -842,7 +940,6 @@ uint32_t EndStateBlock(Cpu* c, ComObject* self) {
   StateBlock8* sb = d->recording;
   if (!sb) return d3d::D3DERR_INVALIDCALL;
   d->recording = nullptr;
-  capture_state_block8(sb);
   st32(arg(c, 1), wrap_state_block8(sb));
   return S_OK;
 }
@@ -864,6 +961,9 @@ uint32_t CaptureStateBlock(Cpu* c, ComObject*) {
 uint32_t DeleteStateBlock(Cpu* c, ComObject*) {
   ComObject* o = com_object(arg(c, 1));
   if (!o) return d3d::D3DERR_INVALIDCALL;
+  if (auto* sb = dynamic_cast<StateBlock8*>(o)) {
+    g_recorded8.erase(sb);
+  }
   return com_Release(c, o);
 }
 
@@ -933,7 +1033,9 @@ uint32_t GetTexture(Cpu* c, ComObject* self) {
 }
 
 uint32_t SetTextureStageState(Cpu* c, ComObject* self) {
-  set_tss(D(self), arg(c, 1), arg(c, 2), arg(c, 3));
+  Device8* d = D(self);
+  if (recording8(d, {RK8_TSS, arg(c, 1), arg(c, 2), {arg(c, 3)}})) return S_OK;
+  set_tss(d, arg(c, 1), arg(c, 2), arg(c, 3));
   return S_OK;
 }
 
@@ -963,9 +1065,9 @@ uint32_t GetStreamSource(Cpu* c, ComObject* self) {
 
 uint32_t SetIndices(Cpu* c, ComObject* self) {
   Device8* d = D(self);
-  d->index_guest = arg(c, 1);
-  d->index_base = arg(c, 2);
-  set_indices(d, d->index_guest);
+  uint32_t ptr = arg(c, 1), base = arg(c, 2);
+  if (recording8(d, {RK8_IND, ptr, base, {}})) return S_OK;
+  set_indices8(d, ptr, base);
   return S_OK;
 }
 
@@ -1477,6 +1579,66 @@ void upload_surface8(Surface8* s) {
 void apply_state_block8(StateBlock8* sb) {
   Device8* d = static_cast<Device8*>(sb->device);
   if (!d) return;
+  if (sb->recorded) {
+    for (const auto& op : g_recorded8[sb]) {
+      switch (op.kind) {
+        case RK8_RS: set_rs(d, op.a, op.b); break;
+        case RK8_TSS: set_tss(d, op.a, op.b, op.data[0]); break;
+        case RK8_TEX: set_texture8(d, op.a, op.b); break;
+        case RK8_XFORM: {
+          d3d::Mat4 m;
+          memcpy(m.m, op.data.data(), 64);
+          set_transform(d, op.a, m);
+          break;
+        }
+        case RK8_VP:
+          set_viewport(d, d3d::Viewport{op.data[0], op.data[1], op.data[2], op.data[3], fl(op.data[4]), fl(op.data[5])});
+          break;
+        case RK8_MAT: {
+          d3d::Material m;
+          memcpy(&m, op.data.data(), 68);
+          set_material(d, m);
+          break;
+        }
+        case RK8_LIGHT: {
+          d3d::Light l;
+          l.type = op.data[0];
+          memcpy(&l.diffuse, op.data.data() + 1, 25 * 4);
+          set_light(d, op.a, l);
+          break;
+        }
+        case RK8_LIGHTEN: light_enable(d, op.a, op.b != 0); break;
+        case RK8_CLIP: set_clip_plane(d, op.a, (const float*)op.data.data()); break;
+        case RK8_VS:
+          if (!(op.a & 0x80000000u)) {
+            set_fvf(d, op.a);
+            d->vs_handle = 0;
+            emit_shaders(d);
+          } else {
+            d->vs_handle = op.a;
+            emit_shaders(d);
+          }
+          break;
+        case RK8_PS:
+          d->ps_handle = op.a;
+          emit_shaders(d);
+          break;
+        case RK8_VSC:
+          set_vsc(d, op.a, (const float*)op.data.data(), op.b);
+          break;
+        case RK8_PSC:
+          set_psc(d, op.a, (const float*)op.data.data(), op.b);
+          break;
+        case RK8_STREAM:
+          set_stream8(d, op.a, op.b, op.data[0]);
+          break;
+        case RK8_IND:
+          set_indices8(d, op.a, op.b);
+          break;
+      }
+    }
+    return;
+  }
   for (uint32_t i = 0; i < 256; i++) {
     if (d->st.rs[i] != sb->snapshot.rs[i]) set_rs(d, i, sb->snapshot.rs[i]);
   }
@@ -1551,19 +1713,32 @@ void apply_state_block8(StateBlock8* sb) {
 void capture_state_block8(StateBlock8* sb) {
   Device8* d = static_cast<Device8*>(sb->device);
   if (!d) return;
-  sb->snapshot = d->st;
-  memcpy(sb->bound_tex, d->bound_tex, sizeof(d->bound_tex));
-  memcpy(sb->bound_tex_guest, d->bound_tex_guest, sizeof(d->bound_tex_guest));
-  memcpy(sb->streams, d->streams, sizeof(d->streams));
-  sb->fvf = d->fvf;
-  sb->vs_handle = d->vs_handle;
-  sb->ps_handle = d->ps_handle;
-  sb->index_gl = d->index_gl;
-  sb->index_fmt = d->index_fmt;
-  sb->index_guest = d->index_guest;
-  sb->index_base = d->index_base;
-  sb->vs_f = d->vs_f;
-  sb->ps_f = d->ps_f;
+  if (!sb->recorded) {
+    sb->snapshot = d->st;
+    memcpy(sb->bound_tex, d->bound_tex, sizeof(d->bound_tex));
+    memcpy(sb->bound_tex_guest, d->bound_tex_guest, sizeof(d->bound_tex_guest));
+    memcpy(sb->streams, d->streams, sizeof(d->streams));
+    sb->fvf = d->fvf;
+    sb->vs_handle = d->vs_handle;
+    sb->ps_handle = d->ps_handle;
+    sb->index_gl = d->index_gl;
+    sb->index_fmt = d->index_fmt;
+    sb->index_guest = d->index_guest;
+    sb->index_base = d->index_base;
+    sb->vs_f = d->vs_f;
+    sb->ps_f = d->ps_f;
+  } else {
+    for (auto& op : g_recorded8[sb]) {
+      switch (op.kind) {
+        case RK8_RS: op.b = op.a < 256 ? d->st.rs[op.a] : 0; break;
+        case RK8_TSS: op.data[0] = (op.a < 8 && op.b < 33) ? d->st.tss[op.a][op.b] : 0; break;
+        case RK8_TEX: op.b = op.a < 8 ? d->bound_tex_guest[op.a] : 0; break;
+        case RK8_VS: op.a = d->vs_handle ? d->vs_handle : d->fvf; break;
+        case RK8_PS: op.a = d->ps_handle; break;
+        default: break;
+      }
+    }
+  }
 }
 
 void verify_iface_nargs(const char* label, ComInterface& iface, const sdk_nargs::Method* exp, size_t nexp) {
