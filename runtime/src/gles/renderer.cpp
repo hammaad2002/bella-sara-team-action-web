@@ -797,35 +797,36 @@ void draw(uint32_t prim, uint32_t start, uint32_t count, bool indexed, int32_t b
     glBufferData(GL_ARRAY_BUFFER, up_vbytes, up_vdata, GL_STREAM_DRAW);
   }
   GLenum mode = gl_prim(prim);
+
   if (!indexed) {
     if (!setup_attributes(0, up, up_stride)) return;
     glDrawArrays(mode, (GLint)start, (GLsizei)nverts);
-    return;
-  }
-  GLenum itype;
-  uint32_t isize;
-  if (up) {
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_up_ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, up_ibytes, up_idata, GL_STREAM_DRAW);
-    isize = up_ibits / 8;
-    start = 0;
   } else {
-    auto ib = g.bufs.find(g.index_buffer);
-    if (ib == g.bufs.end()) {
+    GLenum itype;
+    uint32_t isize;
+    if (up) {
+      glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_up_ibo);
+      glBufferData(GL_ELEMENT_ARRAY_BUFFER, up_ibytes, up_idata, GL_STREAM_DRAW);
+      isize = up_ibits / 8;
+      start = 0;
+    } else {
+      auto ib = g.bufs.find(g.index_buffer);
+      if (ib == g.bufs.end()) {
+        g.skipped_draws++;
+        return;
+      }
+      glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib->second.gl);
+      isize = g.index_bits / 8;
+    }
+    itype = isize == 4 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
+    if (!setup_attributes(base_vertex, up, up_stride)) {
       g.skipped_draws++;
       return;
     }
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib->second.gl);
-    isize = g.index_bits / 8;
+    (void)min_index;
+    (void)num_vertices;
+    glDrawElements(mode, (GLsizei)nverts, itype, (const void*)(uintptr_t)(start * isize));
   }
-  itype = isize == 4 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
-  if (!setup_attributes(base_vertex, up, up_stride)) {
-    g.skipped_draws++;
-    return;
-  }
-  (void)min_index;
-  (void)num_vertices;
-  glDrawElements(mode, (GLsizei)nverts, itype, (const void*)(uintptr_t)(start * isize));
 }
 
 }  // namespace gles

@@ -24,6 +24,7 @@ std::mutex g_input_mutex;
 std::deque<InputEvent> g_input;
 uint8_t g_keys[256];
 MouseState g_mouse{};
+int g_mouse_x = 400, g_mouse_y = 300;
 std::atomic<int> g_canvas_w{640}, g_canvas_h{480};
 std::atomic<bool> g_window{false};
 GamepadState g_pads[kMaxGamepads];
@@ -89,6 +90,26 @@ MouseState take_mouse_state() {
   MouseState m = g_mouse;
   g_mouse.dx = g_mouse.dy = g_mouse.wheel = 0;
   return m;
+}
+
+void mouse_pos(int* x, int* y) {
+  std::lock_guard<std::mutex> lock(g_input_mutex);
+  if (x) *x = g_mouse_x;
+  if (y) *y = g_mouse_y;
+}
+
+void set_mouse_pos(int x, int y) {
+  std::lock_guard<std::mutex> lock(g_input_mutex);
+  g_mouse.dx += x - g_mouse_x;
+  g_mouse.dy += y - g_mouse_y;
+  g_mouse_x = x;
+  g_mouse_y = y;
+}
+
+bool mouse_button_down(int button) {
+  if (button < 0 || button >= 4) return false;
+  std::lock_guard<std::mutex> lock(g_input_mutex);
+  return (g_mouse.buttons[button] & 0x80) != 0;
 }
 
 void frame_presented(uint64_t) {}
@@ -196,6 +217,8 @@ EMSCRIPTEN_KEEPALIVE void web_mouse_move(int x, int y, int dx, int dy) {
     std::lock_guard<std::mutex> lock(g_input_mutex);
     g_mouse.dx += dx;
     g_mouse.dy += dy;
+    g_mouse_x = x;
+    g_mouse_y = y;
   }
   InputEvent e{};
   e.kind = InputEvent::MouseMove;
@@ -208,6 +231,8 @@ EMSCRIPTEN_KEEPALIVE void web_mouse_button(int button, int down, int x, int y) {
   {
     std::lock_guard<std::mutex> lock(g_input_mutex);
     if (button >= 0 && button < 4) g_mouse.buttons[button] = down ? 0x80 : 0;
+    g_mouse_x = x;
+    g_mouse_y = y;
   }
   InputEvent e{};
   e.kind = down ? InputEvent::MouseDown : InputEvent::MouseUp;

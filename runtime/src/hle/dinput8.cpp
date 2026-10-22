@@ -29,6 +29,7 @@ const Guid GUID_ZAxis = {0xA36D02E2, 0xC9F3, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x
 const Guid GUID_RxAxis = {0xA36D02F4, 0xC9F3, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
 const Guid GUID_RyAxis = {0xA36D02F5, 0xC9F3, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
 const Guid GUID_Button = {0xA36D02F0, 0xC9F3, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
+const Guid GUID_Key = {0x55728220, 0xD33C, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
 const Guid GUID_POV = {0xA36D02F2, 0xC9F3, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
 // Product GUID in DirectInput's {PIDVID-0000-0000-0000-"PIDVID"} form (an Xbox 360 pad's IDs).
 const Guid kPadProduct = {0x028E045E, 0x0000, 0x0000, {0x00, 0x00, 0x50, 0x49, 0x44, 0x56, 0x49, 0x44}};
@@ -45,7 +46,7 @@ constexpr uint32_t DIERR_INVALIDPARAM = 0x80070057, DIERR_NOTACQUIRED = 0x800700
                    DIERR_DEVICENOTREG = 0x80040154, DIERR_OBJECTNOTFOUND = 0x80070002, DIERR_UNSUPPORTED = 0x80004001,
                    DIERR_UNPLUGGED = 0x80040209;
 constexpr uint32_t DI_OK = 0, DIENUM_CONTINUE = 1;
-constexpr uint32_t DIDFT_ABSAXIS = 0x2, DIDFT_AXIS = 0x3, DIDFT_PSHBUTTON = 0x4, DIDFT_BUTTON = 0xc, DIDFT_POV = 0x10,
+constexpr uint32_t DIDFT_RELAXIS = 0x1, DIDFT_ABSAXIS = 0x2, DIDFT_AXIS = 0x3, DIDFT_PSHBUTTON = 0x4, DIDFT_BUTTON = 0xc, DIDFT_POV = 0x10,
                    DIDFT_FFACTUATOR = 0x01000000;
 constexpr uint32_t DIPROP_RANGE = 4, DIPROP_DEADZONE = 5, DIPROP_SATURATION = 6, DIPROP_FFGAIN = 7, DIPROP_AXISMODE = 8,
                    DIPROP_AUTOCENTER = 9, DIPROP_BUFFERSIZE = 10;
@@ -278,10 +279,47 @@ void write_object(uint32_t p, const Guid& type, uint32_t ofs, uint32_t dwtype, u
 uint32_t dev_EnumObjects(Cpu* c, ComObject* self) {
   auto* d = dev(self);
   uint32_t cb = arg(c, 1), ref = arg(c, 2), flags = arg(c, 3);
-  if (d->kind != Kind::Pad) return DI_OK;
-  bool all = (flags & 0xff) == 0, ff_only = flags & DIDFT_FFACTUATOR;
+  bool all = (flags & 0xff) == 0, ff_only = (flags & DIDFT_FFACTUATOR) != 0;
+  if (ff_only && d->kind != Kind::Pad) return DI_OK;
+
   uint32_t obj = heap_alloc(process_heap(), 316, true);
   bool go = true;
+
+  if (d->kind == Kind::Keyboard) {
+    if (all || (flags & DIDFT_BUTTON)) {
+      for (int k = 0; go && k < 256; k++) {
+        write_object(obj, GUID_Key, (uint32_t)k, DIDFT_PSHBUTTON | ((uint32_t)k << 8), 0, "Key " + std::to_string(k), 7, (uint16_t)k, false);
+        go = guest_call(c, cb, {obj, ref}) == DIENUM_CONTINUE;
+      }
+    }
+    heap_free(process_heap(), obj);
+    return DI_OK;
+  }
+
+  if (d->kind == Kind::Mouse) {
+    if (all || (flags & DIDFT_AXIS)) {
+      const AxisInfo mouse_axes[] = {
+          {&GUID_XAxis, DIMOFS_X, "X Axis", 0x30, false},
+          {&GUID_YAxis, DIMOFS_Y, "Y Axis", 0x31, false},
+          {&GUID_ZAxis, DIMOFS_Z, "Wheel", 0x32, false},
+      };
+      for (int n = 0; go && n < 3; n++) {
+        const auto& a = mouse_axes[n];
+        write_object(obj, *a.type, a.ofs, DIDFT_RELAXIS | ((uint32_t)n << 8), 0, a.name, 1, a.usage, false);
+        go = guest_call(c, cb, {obj, ref}) == DIENUM_CONTINUE;
+      }
+    }
+    if (all || (flags & DIDFT_BUTTON)) {
+      for (int n = 0; go && n < 4; n++) {
+        write_object(obj, GUID_Button, DIMOFS_BUTTON0 + n, DIDFT_PSHBUTTON | ((uint32_t)n << 8), 0,
+                     "Button " + std::to_string(n), 9, (uint16_t)(n + 1), false);
+        go = guest_call(c, cb, {obj, ref}) == DIENUM_CONTINUE;
+      }
+    }
+    heap_free(process_heap(), obj);
+    return DI_OK;
+  }
+
   if (all || (flags & DIDFT_AXIS))
     for (int n = 0; go && n < kAxisCount; n++) {
       const AxisInfo& a = kAxes[n];

@@ -469,14 +469,14 @@ HLE_STDCALL(kDll, GetCursorPos, 1) {
   return 1;
 }
 
-HLE_STDCALL(kDll, ScreenToClient, 3) {
+HLE_STDCALL(kDll, ScreenToClient, 2) {
   uint32_t pt = arg(c, 1);
   st32(pt + 0, ld32(pt + 0));
   st32(pt + 4, ld32(pt + 4));
   return 1;
 }
 
-HLE_STDCALL(kDll, ClientToScreen, 3) {
+HLE_STDCALL(kDll, ClientToScreen, 2) {
   uint32_t pt = arg(c, 1);
   st32(pt + 0, ld32(pt + 0));
   st32(pt + 4, ld32(pt + 4));

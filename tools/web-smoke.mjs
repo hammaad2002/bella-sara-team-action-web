@@ -38,11 +38,20 @@ page.on("pageerror", (e) => console.log(`${stamp()} pageerror: ${e.message}\n${e
 page.on("crash", () => console.log(`${stamp()} page crashed`));
 
 await page.goto(url);
-const gl = await page.evaluate(() => {
-  const c = document.createElement("canvas").getContext("webgl2");
-  const d = c && c.getExtension("WEBGL_debug_renderer_info");
-  return c ? `${c.getParameter(d ? d.UNMASKED_RENDERER_WEBGL : c.RENDERER)}` : "no webgl2";
-});
+await page.waitForLoadState("domcontentloaded");
+let gl = "unknown";
+for (let attempt = 0; attempt < 5; attempt++) {
+  try {
+    gl = await page.evaluate(() => {
+      const c = document.createElement("canvas").getContext("webgl2");
+      const d = c && c.getExtension("WEBGL_debug_renderer_info");
+      return c ? `${c.getParameter(d ? d.UNMASKED_RENDERER_WEBGL : c.RENDERER)}` : "no webgl2";
+    });
+    break;
+  } catch (e) {
+    await page.waitForTimeout(500);
+  }
+}
 console.log(`${stamp()} WebGL2 renderer: ${gl}`);
 
 // --blur-at / --focus-at <seconds after the game starts running>: simulate the window losing and
@@ -60,7 +69,8 @@ while (Date.now() < deadline) {
   await page.waitForTimeout(2000);
   const s = await page.evaluate(() => {
     const d = window.__bella;
-    return { state: d.state, frames: d.frames, status: document.getElementById("status").textContent, logLen: d.log.length, caps: Object.keys(d.captures) };
+    if (!d) return { state: "loading", frames: 0, status: document.getElementById("status")?.textContent ?? "", logLen: 0, caps: [] };
+    return { state: d.state, frames: d.frames, status: document.getElementById("status")?.textContent ?? "", logLen: d.log?.length ?? 0, caps: Object.keys(d.captures ?? {}) };
   });
   if (s.state === "running" && !runningSince) runningSince = Date.now();
   const ranFor = runningSince ? (Date.now() - runningSince) / 1000 : -1;
@@ -97,7 +107,7 @@ while (Date.now() < deadline) {
   }
 }
 console.log(`${stamp()} finished loop: deadline_passed=${Date.now() >= deadline}`);
-const engineLog = await page.evaluate(() => window.__bella.log.join("\n"));
+const engineLog = await page.evaluate(() => window.__bella?.log?.join("\n") ?? "");
 writeFileSync("work/web-engine.log", engineLog);
 console.log("---- engine log (tail; full log in work/web-engine.log) ----\n" + engineLog.split("\n").slice(-40).join("\n"));
 const shellLog = await page.evaluate(() => document.getElementById("log").innerText);
