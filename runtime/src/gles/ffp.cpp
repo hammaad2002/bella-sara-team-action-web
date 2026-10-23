@@ -11,6 +11,7 @@
 namespace gles {
 
 int attr_location(uint32_t usage, uint32_t index) {
+  if (usage == 16) return index < 16 ? (int)index : -1;
   switch (usage) {
     case 0:  // POSITION
     case 9:  // POSITIONT

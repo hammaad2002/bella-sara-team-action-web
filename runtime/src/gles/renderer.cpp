@@ -768,8 +768,12 @@ void draw(uint32_t prim, uint32_t start, uint32_t count, bool indexed, int32_t b
   glBindVertexArray(g_vao);
   bool up = up_vdata != nullptr;
   if (rt::trace_enabled("draws") || rt::trace_enabled("debug")) {
-    rt::log(rt::Log::Info, "draw prim %u count %u start %u indexed %d base %d up %d stride %u layout %zu tex0 %u", prim, count, start, indexed,
-            base_vertex, up, up_stride, g.layout.size(), g.textures[0]);
+    rt::log(rt::Log::Info, "draw prim %u count %u start %u indexed %d base %d up %d stride %u layout %zu tex0 %u vs_kind %u blend %u rs151 %u vs %u ps %u",
+            prim, count, start, indexed, base_vertex, up, up_stride, g.layout.size(), g.textures[0],
+            key.vs_kind, key.blend, g.st.rs[151], g.vs, g.ps);
+    std::string elts;
+    for (auto& el : g.layout) elts += " [u:" + std::to_string(el.usage) + " t:" + std::to_string(el.type) + " o:" + std::to_string(el.offset) + "]";
+    rt::log(rt::Log::Info, "  layout:%s", elts.c_str());
     if (up && up_vbytes >= 32) {
       const float* f = (const float*)up_vdata;
       const uint32_t* u = (const uint32_t*)up_vdata;

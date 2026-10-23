@@ -356,6 +356,7 @@ std::vector<int> prop_axes(uint32_t hdr) {
 uint32_t dev_SetProperty(Cpu* c, ComObject* self) {
   auto* d = dev(self);
   uint32_t prop = arg(c, 1), hdr = arg(c, 2);
+  log(Log::Info, "dinput8: SetProperty kind=%d prop=%u val=%u", (int)d->kind, prop, ld32(hdr + 16));
   if (d->kind == Kind::Keyboard || d->kind == Kind::Mouse) {
     if (prop == DIPROP_BUFFERSIZE) {
       d->buffer_size = ld32(hdr + 16);
@@ -430,6 +431,7 @@ bool needs_acquire(const Device* d) {
 
 uint32_t dev_Acquire(Cpu*, ComObject* self) {
   auto* d = dev(self);
+  log(Log::Info, "dinput8: Acquire kind=%d", (int)d->kind);
   if (d->kind == Kind::Pad && !pad_connected(d)) return DIERR_UNPLUGGED;
   d->acquired = true;
   return DI_OK;
@@ -489,6 +491,9 @@ uint32_t dev_GetDeviceState(Cpu* c, ComObject* self) {
     memcpy(host(out), plat::keyboard_state(), std::min<uint32_t>(size, 256));
   } else if (d->kind == Kind::Mouse) {
     plat::MouseState m = plat::take_mouse_state();
+    int mx = 0, my = 0;
+    plat::mouse_pos(&mx, &my);
+    log(Log::Info, "dinput8: Mouse GetDeviceState dx=%d dy=%d pos=(%d,%d) axis_mode=%u", m.dx, m.dy, mx, my, d->axis_mode);
     st32(out + 0, (uint32_t)m.dx);
     st32(out + 4, (uint32_t)m.dy);
     st32(out + 8, (uint32_t)m.wheel);
@@ -516,6 +521,7 @@ uint32_t dev_GetDeviceData(Cpu* c, ComObject* self) {
   user32_pump();
   auto* d = dev(self);
   uint32_t objsize = arg(c, 1), out = arg(c, 2), inout = arg(c, 3), flags = arg(c, 4);
+  log(Log::Info, "dinput8: GetDeviceData kind=%d objsize=%u inout=%u bufsize=%u", (int)d->kind, objsize, inout ? ld32(inout) : 0, d->buffer_size);
   if (needs_acquire(d) && !d->acquired) return DIERR_NOTACQUIRED;
   uint32_t cap = ld32(inout), n = 0;
   const bool peek = (flags & 1) != 0;

@@ -137,6 +137,63 @@ std::vector<d3d::VertexElement> fvf_elements(uint32_t fvf) {
   return e;
 }
 
+static uint16_t d3d8_decl_type_size(uint8_t t) {
+  switch (t) {
+    case 0: return 4;   // FLOAT1
+    case 1: return 8;   // FLOAT2
+    case 2: return 12;  // FLOAT3
+    case 3: return 16;  // FLOAT4
+    case 4: return 4;   // D3DCOLOR
+    case 5: return 4;   // UBYTE4
+    case 6: return 4;   // SHORT2
+    case 7: return 8;   // SHORT4
+    case 8: return 4;   // UBYTE4N
+    case 9: return 4;   // SHORT2N
+    case 10: return 8;  // SHORT4N
+    case 11: return 4;  // USHORT2N
+    case 12: return 8;  // USHORT4N
+    case 13: return 4;  // UDEC3
+    case 14: return 4;  // DEC3N
+    case 15: return 4;  // FLOAT16_2
+    case 16: return 8;  // FLOAT16_4
+    default: return 4;
+  }
+}
+
+std::vector<d3d::VertexElement> parse_d3d8_decl(uint32_t decl_addr) {
+  std::vector<d3d::VertexElement> elts;
+  if (decl_addr < kNullGuardEnd) return elts;
+  uint16_t cur_stream = 0;
+  uint16_t cur_offset = 0;
+  for (int i = 0; i < 256; i++) {
+    uint32_t token = ld32(decl_addr + i * 4);
+    if (token == 0xffffffffu) break;
+    uint32_t tok_type = (token >> 29) & 7;
+    if (tok_type == 1) {  // D3DVSD_STREAM
+      cur_stream = (uint16_t)(token & 0xf);
+      cur_offset = 0;
+    } else if (tok_type == 2) {  // D3DVSD_STREAMDATA
+      if (token & 0x10000000u) {  // D3DVSD_SKIP
+        uint32_t dwords = (token >> 16) & 0x1fu;
+        cur_offset += (uint16_t)(dwords * 4);
+      } else {  // D3DVSD_REG
+        uint8_t reg = (uint8_t)(token & 0x1fu);
+        uint8_t type = (uint8_t)((token >> 16) & 0x1fu);
+        d3d::VertexElement e{};
+        e.stream = cur_stream;
+        e.offset = cur_offset;
+        e.type = type;
+        e.method = 0;
+        e.usage = 16;  // Register index
+        e.usage_index = reg;  // v0..v15
+        elts.push_back(e);
+        cur_offset += d3d8_decl_type_size(type);
+      }
+    }
+  }
+  return elts;
+}
+
 void emit_layout(const std::vector<d3d::VertexElement>& els) {
   rec().u32(cmd::OpSetVertexLayout);
   rec().u32((uint32_t)els.size());
@@ -758,15 +815,20 @@ uint32_t SetVertexShader(Cpu* c, ComObject* self) {
   Device8* d = D(self);
   uint32_t token = arg(c, 1);
   if (recording8(d, {RK8_VS, token, 0, {}})) return S_OK;
-  // D3D8: shader handles have bit 31 set; values with bit 31 clear are FVF codes.
-  if (!(token & 0x80000000u)) {
-    set_fvf(d, token);
-    d->vs_handle = 0;
-    emit_shaders(d);
-  } else {
+  uint32_t caller = ld32(c->esp);
+  auto* s = dynamic_cast<Shader8*>(com_object(token & ~0x80000000u));
+  if (s && !s->pixel) {
     d->vs_handle = token;
+    d->fvf = 0;
+    d->st.fvf = 0;
+    log(Log::Info, "d3d8: SetVertexShader handle=%08x vs_id=%u elts=%zu caller=%08x", token, s->program_id, s->elements.size(), caller);
     emit_shaders(d);
+    emit_layout(s->elements);
+    return S_OK;
   }
+  d->vs_handle = 0;
+  set_fvf(d, token);
+  emit_shaders(d);
   return S_OK;
 }
 
@@ -781,6 +843,7 @@ uint32_t SetPixelShader(Cpu* c, ComObject* self) {
   Device8* d = D(self);
   uint32_t handle = arg(c, 1);
   if (recording8(d, {RK8_PS, handle, 0, {}})) return S_OK;
+  log(Log::Info, "d3d8: SetPixelShader handle=%08x", handle);
   d->ps_handle = handle;
   emit_shaders(d);
   return S_OK;
@@ -796,6 +859,7 @@ uint32_t GetPixelShader(Cpu* c, ComObject* self) {
 uint32_t SetVertexShaderConstant(Cpu* c, ComObject* self) {
   Device8* d = D(self);
   uint32_t start = arg(c, 1), count = arg(c, 3);
+  if (start >= 12) log(Log::Info, "d3d8: SetVertexShaderConstant start=%u count=%u", start, count);
   if (d->recording) {
     RecOp8 op{RK8_VSC, start, count, {}};
     op.data.resize(count * 4);
@@ -988,7 +1052,7 @@ uint32_t GetInfo(Cpu* c, ComObject*) {
 }
 
 uint32_t DeleteVertexShader(Cpu* c, ComObject*) {
-  ComObject* o = com_object(arg(c, 1));
+  ComObject* o = com_object(arg(c, 1) & ~0x80000000u);
   if (!o) return d3d::D3DERR_INVALIDCALL;
   return com_Release(c, o);
 }
@@ -1254,15 +1318,18 @@ uint32_t ProcessVertices(Cpu*, ComObject*) { return d3d::D3DERR_INVALIDCALL; }
 uint32_t CreateVertexShader(Cpu* c, ComObject*) {
   uint32_t decl = arg(c, 1), func = arg(c, 2), out = arg(c, 3);
   (void)arg(c, 4);  // Usage
-  (void)decl;
   if (out < kNullGuardEnd) return d3d8::D3DERR_INVALIDCALL;
   auto* s = new Shader8();
   s->pixel = false;
   s->tokens = read_shader_tokens(func);
+  s->elements = parse_d3d8_decl(decl);
   s->program_id = new_gl_id();
   rec().op(cmd::OpCreateShader, {s->program_id, 0u, (uint32_t)s->tokens.size()});
   rec().bytes(s->tokens.data(), (uint32_t)s->tokens.size() * 4);
-  st32(out, wrap_shader8(s));
+  uint32_t wrapped = wrap_shader8(s);
+  log(Log::Info, "d3d8: CreateVertexShader id=%u elts=%zu tokens=%zu wrapped=%08x caller=%08x",
+      s->program_id, s->elements.size(), s->tokens.size(), wrapped, ld32(c->esp));
+  st32(out, wrapped);
   return S_OK;
 }
 
@@ -1275,7 +1342,9 @@ uint32_t CreatePixelShader(Cpu* c, ComObject*) {
   s->program_id = new_gl_id();
   rec().op(cmd::OpCreateShader, {s->program_id, 1u, (uint32_t)s->tokens.size()});
   rec().bytes(s->tokens.data(), (uint32_t)s->tokens.size() * 4);
-  st32(out, wrap_shader8(s));
+  uint32_t wrapped = wrap_shader8(s);
+  log(Log::Info, "d3d8: CreatePixelShader id=%u tokens=%zu wrapped=%08x", s->program_id, s->tokens.size(), wrapped);
+  st32(out, wrapped);
   return S_OK;
 }
 
@@ -1609,16 +1678,21 @@ void apply_state_block8(StateBlock8* sb) {
         }
         case RK8_LIGHTEN: light_enable(d, op.a, op.b != 0); break;
         case RK8_CLIP: set_clip_plane(d, op.a, (const float*)op.data.data()); break;
-        case RK8_VS:
-          if (!(op.a & 0x80000000u)) {
-            set_fvf(d, op.a);
-            d->vs_handle = 0;
-            emit_shaders(d);
-          } else {
+        case RK8_VS: {
+          auto* s = dynamic_cast<Shader8*>(com_object(op.a & ~0x80000000u));
+          if (s && !s->pixel) {
             d->vs_handle = op.a;
+            d->fvf = 0;
+            d->st.fvf = 0;
+            emit_shaders(d);
+            emit_layout(s->elements);
+          } else {
+            d->vs_handle = 0;
+            set_fvf(d, op.a);
             emit_shaders(d);
           }
           break;
+        }
         case RK8_PS:
           d->ps_handle = op.a;
           emit_shaders(d);
@@ -1704,7 +1778,10 @@ void apply_state_block8(StateBlock8* sb) {
   d->fvf = sb->fvf;
   d->st.fvf = sb->fvf;
 
-  if (fvf_changed || (!d->vs_handle && d->fvf)) {
+  if (d->vs_handle) {
+    auto* s = dynamic_cast<Shader8*>(com_object(d->vs_handle & ~0x80000000u));
+    if (s && !s->pixel) emit_layout(s->elements);
+  } else if (fvf_changed || d->fvf) {
     emit_layout(fvf_elements(d->fvf));
   }
   emit_shaders(d);
@@ -1735,6 +1812,12 @@ void capture_state_block8(StateBlock8* sb) {
         case RK8_TEX: op.b = op.a < 8 ? d->bound_tex_guest[op.a] : 0; break;
         case RK8_VS: op.a = d->vs_handle ? d->vs_handle : d->fvf; break;
         case RK8_PS: op.a = d->ps_handle; break;
+        case RK8_VSC:
+          if (op.a < 256) memcpy(op.data.data(), &d->vs_f[op.a * 4], std::min(op.b, 256u - op.a) * 16);
+          break;
+        case RK8_PSC:
+          if (op.a < 224) memcpy(op.data.data(), &d->ps_f[op.a * 4], std::min(op.b, 224u - op.a) * 16);
+          break;
         default: break;
       }
     }

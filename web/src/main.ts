@@ -302,7 +302,7 @@ async function play() {
     engine._web_game_register(fptr, funcs.length);
   }
 
-  const input = new Input(engine, canvas, { pauseAlias: prefs.pauseAlias, mouseCapture: settings.mouseEnabled });
+  const input = new Input(engine, canvas, { pauseAlias: prefs.pauseAlias, mouseCapture: false });
   // F1 or the HUD's Controls button: the controls list. The game is paused meanwhile (as when the
   // window loses focus) and gets no input.
   const toggleHelp = () => {

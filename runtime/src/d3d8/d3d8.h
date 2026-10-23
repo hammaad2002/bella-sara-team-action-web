@@ -72,6 +72,7 @@ struct Shader8 : public rt::ComObject {
   bool pixel = false;
   std::vector<uint32_t> tokens;
   uint32_t program_id = 0;
+  std::vector<d3d::VertexElement> elements;
 };
 
 struct StreamBinding8 {

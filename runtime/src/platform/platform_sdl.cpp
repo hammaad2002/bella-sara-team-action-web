@@ -344,6 +344,7 @@ bool g_script_parsed = false;
 
 bool parse_xy(const std::string& tail, int* x, int* y) {
   size_t comma = tail.find(',');
+  if (comma == std::string::npos) comma = tail.find('x');
   if (comma == std::string::npos) return false;
   *x = atoi(tail.c_str());
   *y = atoi(tail.c_str() + comma + 1);

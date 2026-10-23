@@ -56,7 +56,10 @@ struct Translator {
     char buf[64];
     switch (type) {
       case R_TEMP: temps.insert(n); snprintf(buf, sizeof buf, "r%u", n); return buf;
-      case R_INPUT: snprintf(buf, sizeof buf, "v%u", n); return buf;
+      case R_INPUT:
+        if (input_loc.find(n) == input_loc.end()) input_loc[n] = (int)n;
+        snprintf(buf, sizeof buf, "v%u", n);
+        return buf;
       case R_CONST:
         if (has_rel) {
           relative = true;
@@ -258,7 +261,7 @@ struct Translator {
       i = next;
     }
     if (!err.empty()) return false;
-    info->nconst = relative ? 256 : max_const;
+    info->nconst = relative ? 224 : max_const;
     info->ok = true;
     return true;
   }

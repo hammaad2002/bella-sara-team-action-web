@@ -200,8 +200,9 @@ void pump() {
       case plat::InputEvent::MouseUp: {
         static const uint32_t down[] = {WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN};
         static const uint32_t up[] = {WM_LBUTTONUP, WM_RBUTTONUP, WM_MBUTTONUP};
+        uint32_t wp = e.kind == plat::InputEvent::MouseDown ? (e.button == 0 ? 1u : e.button == 1 ? 2u : 16u) : 0u;
         if (e.button < 3)
-          post(e.kind == plat::InputEvent::MouseDown ? down[e.button] : up[e.button], 0,
+          post(e.kind == plat::InputEvent::MouseDown ? down[e.button] : up[e.button], wp,
                (uint32_t)(e.y & 0xffff) << 16 | (uint32_t)(e.x & 0xffff));
         break;
       }
@@ -327,8 +328,10 @@ HLE_STDCALL(kDll, PeekMessageA, 5) {
   st32(msg + 8, m.wparam);
   st32(msg + 12, m.lparam);
   st32(msg + 16, now_ms());
-  st32(msg + 20, 0);
-  st32(msg + 24, 0);
+  int cur_x = 0, cur_y = 0;
+  plat::mouse_pos(&cur_x, &cur_y);
+  st32(msg + 20, (uint32_t)cur_x);
+  st32(msg + 24, (uint32_t)cur_y);
   return 1;
 }
 
@@ -466,6 +469,8 @@ HLE_STDCALL(kDll, GetCursorPos, 1) {
   uint32_t p = arg(c, 0);
   st32(p + 0, (uint32_t)x);
   st32(p + 4, (uint32_t)y);
+  static int gcp_count = 0;
+  if (++gcp_count % 60 == 0) log(Log::Info, "user32: GetCursorPos (%d, %d)", x, y);
   return 1;
 }
 
