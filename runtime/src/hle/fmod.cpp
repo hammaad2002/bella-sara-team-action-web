@@ -76,6 +76,7 @@ const char* kDll = "fmod.dll";
 
 // FMOD 3.75 constants (fmod.h), only what the HLE consumes.
 constexpr uint32_t kLoopOff = 0x1, kLoopNormal = 0x2, kLoopBidi = 0x4;
+constexpr uint32_t k2D = 0x2000, kHW2D = 0x80000;
 constexpr uint32_t kLoadMemory = 0x8000;  // "name" arg is a pointer to data in guest memory
 constexpr uint32_t kOutputDefault = 2;    // FSOUND_OUTPUT_DSOUND
 constexpr int kFreeChannel = -1;          // FSOUND_FREE
@@ -184,7 +185,8 @@ class FmodChannel : public ComObject, public audio::Source {
   double cursor = 0;                      // playback cursor in frames
   uint32_t freq = 0;                      // 0 => the sample's own rate
   int volume = 255;                       // 0..255
-  uint32_t pan = 256;                     // 0..511, 256 centre
+  bool volume_absolute = false;           // FSOUND_SetVolumeAbsolute bypasses master volume
+  uint32_t pan = 128;                     // 0..255, 128 centre
   bool is3d = false;                      // FSOUND_3D_SetAttributes promotes the channel
   Vec3 pos3d;                             // channel source position (world units)
   float min_dist = 1.0f, max_dist = 1e6f;
@@ -195,16 +197,18 @@ class FmodChannel : public ComObject, public audio::Source {
     return (double)r / audio::kRate;
   }
 
-  // Gain math. FMOD volume is linear 0..255 (tapered through db100_to_gain like dsound.cpp, so
-  // vol 0 => -102 dB and vol 255 => 1.0); pan is the 10-bit 0..511 balance. 3D channels
-  // attenuate by inverse distance (rolloff factor, capped by max_dist) and pan by the listener
-  // right-vector projection.
+  // Gain math: FMOD 3 software volume is linear 0..255; pan is 0..255 (128 centre).
+  // Master SFX volume scales non-absolute channels. 3D channels attenuate by inverse distance
+  // from min_dist to max_dist and pan by the listener right-vector projection.
   void gains(float* gl, float* gr) {
     const int master = sys_master();
-    float g = audio::db100_to_gain((volume - 255) * 40);
-    if (master < 255) g *= (float)master / 255.0f;
-    float pl = pan > 256 ? (511 - pan) / 255.0f : 1.0f;
-    float pr = pan < 256 ? (float)pan / 256.0f : 1.0f;
+    float g = (float)std::clamp(volume, 0, 255) / 255.0f;
+    if (!volume_absolute && master < 255) {
+      g *= (float)std::clamp(master, 0, 255) / 255.0f;
+    }
+    const int p = std::clamp((int)pan, 0, 255);
+    float pl = p > 128 ? (255 - p) / 127.0f : 1.0f;
+    float pr = p < 128 ? (float)p / 128.0f : 1.0f;
     if (!is3d) {
       *gl = g * pl;
       *gr = g * pr;
@@ -213,12 +217,13 @@ class FmodChannel : public ComObject, public audio::Source {
     Vec3 pos, front, top;
     float rolloff, doppler;
     listener_state(&pos, nullptr, &front, &top, &rolloff, &doppler);
-    (void)doppler;
     (void)doppler;  // the doppler scale is stored, not simulated (TODO(wave 3))
     const Vec3 rel{pos3d.x - pos.x, pos3d.y - pos.y, pos3d.z - pos.z};
     const float d = len3(rel);
-    if (d > min_dist) {
-      g *= min_dist / (min_dist + rolloff * (std::min(d, max_dist) - min_dist));
+    const float md = std::max(min_dist, 0.001f);
+    const float xd = std::max(max_dist, md);
+    if (d > md) {
+      g *= md / (md + rolloff * (std::min(d, xd) - md));
     }
     if (d > 1e-4f) {
       const Vec3 right{top.y * front.z - top.z * front.y, top.z * front.x - top.x * front.z,
@@ -502,18 +507,18 @@ int start_channel(const std::shared_ptr<FmodSample>& smp, int explicit_ch, bool 
     std::lock_guard<std::mutex> lock(chan->m);
     chan->smp = smp;
     chan->volume = (int)smp->def_vol;
-    // Sample defaults are 0..255 (128 centre); FSOUND_SetPan uses 0..511 (256 centre).
-    chan->pan = std::min(511u, smp->def_pan * 2u);
+    chan->volume_absolute = false;
+    chan->pan = std::clamp<uint32_t>(smp->def_pan, 0, 255);
     chan->freq = 0;  // the sample's natural rate until FSOUND_SetFrequency
     chan->cursor = 0;
     chan->min_dist = smp->min_dist;
     chan->max_dist = smp->max_dist;
-    chan->is3d = false;  // FSOUND_3D_SetAttributes promotes; the header range still attenuates
+    chan->is3d = false;  // promoted to 3D by FSOUND_3D_SetAttributes if sample allows 3D
     chan->pos3d = Vec3{};
     const uint32_t total_frames = (uint32_t)(smp->pcm.size() / (smp->channels ? smp->channels : 1));
     chan->loop_start = smp->loop_start;
     chan->loop_end = smp->loop_end > smp->loop_start ? smp->loop_end : total_frames;
-    chan->looping = (smp->loop_end > smp->loop_start) || ((smp->mode & (kLoopNormal | kLoopBidi)) != 0);
+    chan->looping = (smp->mode & (kLoopNormal | kLoopBidi)) != 0;
     chan->paused = paused_start;
     chan->playing = true;
   }
@@ -617,6 +622,7 @@ HLE_STDCALL_AS(kDll, FSOUND_SetMinHardwareChannels, "_FSOUND_SetMinHardwareChann
 HLE_STDCALL_AS(kDll, FSOUND_SetSFXMasterVolume, "_FSOUND_SetSFXMasterVolume@4", 1) {
   std::lock_guard<std::mutex> lock(g_sys_m);
   g_sfx_master = std::clamp((int)arg(c, 0), 0, 255);
+  if (trace_enabled("audio")) log(Log::Hle, "fmod: SetSFXMasterVolume %d", g_sfx_master);
   return 1;
 }
 
@@ -661,7 +667,9 @@ HLE_STDCALL_AS(kDll, FSOUND_PlaySoundEx, "_FSOUND_PlaySoundEx@16", 4) {
   }
   const int ch = start_channel(smp, (int)arg(c, 0), arg(c, 3) != 0);
   if (ch >= 0 && trace_enabled("audio"))
-    log(Log::Hle, "fmod: PlaySoundEx ch=%d sample=%08x paused=%u", ch, arg(c, 1), arg(c, 3) != 0);
+    log(Log::Hle, "fmod: PlaySoundEx ch=%d sample=%08x (%s) mode=%x loop=%u..%u frames=%zu paused=%u",
+        ch, arg(c, 1), smp->name.c_str(), smp->mode, smp->loop_start, smp->loop_end,
+        smp->pcm.size() / (smp->channels ? smp->channels : 1), arg(c, 3) != 0);
   return ch < 0 ? (uint32_t)-1 : (uint32_t)ch;
 }
 
@@ -673,41 +681,88 @@ HLE_STDCALL_AS(kDll, FSOUND_StopSound, "_FSOUND_StopSound@4", 1) {
 // FSOUND channels hold settings on the started channel; volume 0..255 with the sample's default
 // already applied by start_channel.
 HLE_STDCALL_AS(kDll, FSOUND_SetVolume, "_FSOUND_SetVolume@8", 2) {
-  auto ch = (int)arg(c, 0) == kFreeChannel ? nullptr : channel_shared((int)arg(c, 0));
+  const int c_arg = (int)arg(c, 0);
+  const int vol = std::clamp((int)arg(c, 1), 0, 255);
+  if (trace_enabled("audio")) {  // the game re-sends the same volume every tick: log changes only
+    auto ch = c_arg >= 0 ? channel_shared(c_arg) : nullptr;
+    if (ch && ch->volume != vol) log(Log::Hle, "fmod: SetVolume ch=%d vol=%d", c_arg, vol);
+  }
+  if (c_arg == kAllChannels) {
+    for (auto& ch : g_channels) {
+      if (ch) {
+        ch->volume_absolute = false;
+        ch->volume = vol;
+      }
+    }
+    return 1;
+  }
+  auto ch = c_arg == kFreeChannel ? nullptr : channel_shared(c_arg);
   if (!ch) return 0;
-  ch->volume = std::clamp((int)arg(c, 1), 0, 255);
+  ch->volume_absolute = false;
+  ch->volume = vol;
   return 1;
 }
 
 HLE_STDCALL_AS(kDll, FSOUND_SetVolumeAbsolute, "_FSOUND_SetVolumeAbsolute@8", 2) {
-  auto ch = (int)arg(c, 0) == kFreeChannel ? nullptr : channel_shared((int)arg(c, 0));
+  const int c_arg = (int)arg(c, 0);
+  const int vol = std::clamp((int)arg(c, 1), 0, 255);
+  if (c_arg == kAllChannels) {
+    for (auto& ch : g_channels) {
+      if (ch) {
+        ch->volume_absolute = true;
+        ch->volume = vol;
+      }
+    }
+    return 1;
+  }
+  auto ch = c_arg == kFreeChannel ? nullptr : channel_shared(c_arg);
   if (!ch) return 0;
-  ch->volume = std::clamp((int)arg(c, 1), 0, 255);  // FSOUND 3: same 0..255 units
+  ch->volume_absolute = true;
+  ch->volume = vol;  // FSOUND 3: same 0..255 units, bypasses SFX master
   return 1;
 }
 
-// FSOUND_SetPan: 0..511, 256 centre (0 = hard left, 511 = hard right). Stereo samples pan by
-// channel balance; mono samples get the same balance on the single software output.
+// FSOUND_SetPan: 0..255, 128 centre (0 = hard left, 255 = hard right); FSOUND_STEREOPAN (-1)
+// keeps a stereo sample's own balance, i.e. centre.
 HLE_STDCALL_AS(kDll, FSOUND_SetPan, "_FSOUND_SetPan@8", 2) {
-  auto ch = (int)arg(c, 0) == kFreeChannel ? nullptr : channel_shared((int)arg(c, 0));
+  const int c_arg = (int)arg(c, 0);
+  const int pan = (int)arg(c, 1) == -1 ? 128 : std::clamp((int)arg(c, 1), 0, 255);
+  if (trace_enabled("audio")) log(Log::Hle, "fmod: SetPan ch=%d pan=%d", c_arg, (int)arg(c, 1));
+  if (c_arg == kAllChannels) {
+    for (auto& ch : g_channels) if (ch) ch->pan = pan;
+    return 1;
+  }
+  auto ch = c_arg == kFreeChannel ? nullptr : channel_shared(c_arg);
   if (!ch) return 0;
-  ch->pan = std::clamp((int)arg(c, 1), 0, 511);
+  ch->pan = pan;
   return 1;
 }
 
 HLE_STDCALL_AS(kDll, FSOUND_SetFrequency, "_FSOUND_SetFrequency@8", 2) {
-  auto ch = (int)arg(c, 0) == kFreeChannel ? nullptr : channel_shared((int)arg(c, 0));
+  const int c_arg = (int)arg(c, 0);
+  const int freq = std::clamp((int)arg(c, 1), 1, 100000);  // FMOD 3: 1..100k-ish bounded
+  if (c_arg == kAllChannels) {
+    for (auto& ch : g_channels) if (ch) ch->freq = freq;
+    return 1;
+  }
+  auto ch = c_arg == kFreeChannel ? nullptr : channel_shared(c_arg);
   if (!ch) return 0;
-  ch->freq = std::clamp((int)arg(c, 1), 1, 100000);  // FMOD 3: 1..100k-ish bounded
+  ch->freq = freq;
   return 1;
 }
 
 HLE_STDCALL_AS(kDll, FSOUND_SetPaused, "_FSOUND_SetPaused@8", 2) {
-  auto ch = (int)arg(c, 0) == kFreeChannel ? nullptr : channel_shared((int)arg(c, 0));
-  if (!ch) return 0;
+  const int c_arg = (int)arg(c, 0);
   const bool paused = arg(c, 1) != 0;
+  if (c_arg == kAllChannels) {
+    for (auto& ch : g_channels) if (ch) ch->paused = paused;
+    if (trace_enabled("audio")) log(Log::Hle, "fmod: SetPaused ch=ALL paused=%u", paused);
+    return 1;
+  }
+  auto ch = c_arg == kFreeChannel ? nullptr : channel_shared(c_arg);
+  if (!ch) return 0;
   ch->paused = paused;
-  if (trace_enabled("audio")) log(Log::Hle, "fmod: SetPaused ch=%d paused=%u", (int)arg(c, 0), paused);
+  if (trace_enabled("audio")) log(Log::Hle, "fmod: SetPaused ch=%d paused=%u", c_arg, paused);
   return 1;
 }
 
@@ -717,18 +772,26 @@ HLE_STDCALL_AS(kDll, FSOUND_GetPaused, "_FSOUND_GetPaused@4", 1) {
 }
 
 HLE_STDCALL_AS(kDll, FSOUND_SetLoopMode, "_FSOUND_SetLoopMode@8", 2) {
-  auto ch = (int)arg(c, 0) == kFreeChannel ? nullptr : channel_shared((int)arg(c, 0));
-  if (!ch) return 0;
-  std::lock_guard<std::mutex> lock(ch->m);
+  const int c_arg = (int)arg(c, 0);
   const uint32_t mode = arg(c, 1) & 7u;
-  if (ch->smp && ch->loop_end <= ch->loop_start) {
-    ch->loop_start = 0;
-    ch->loop_end = (uint32_t)(ch->smp->pcm.size() / (ch->smp->channels ? ch->smp->channels : 1));
+  auto apply = [&](FmodChannel* ch) {
+    std::lock_guard<std::mutex> lock(ch->m);
+    if (ch->smp && ch->loop_end <= ch->loop_start) {
+      ch->loop_start = 0;
+      ch->loop_end = (uint32_t)(ch->smp->pcm.size() / (ch->smp->channels ? ch->smp->channels : 1));
+    }
+    const bool points = ch->loop_end > ch->loop_start;
+    ch->looping = mode == kLoopNormal || mode == kLoopBidi ? true
+                  : mode == kLoopOff                      ? false
+                                                          : points;
+  };
+  if (c_arg == kAllChannels) {
+    for (auto& ch : g_channels) if (ch) apply(ch.get());
+    return 1;
   }
-  const bool points = ch->loop_end > ch->loop_start;
-  ch->looping = mode == kLoopNormal || mode == kLoopBidi ? true
-                : mode == kLoopOff                      ? false
-                                                        : points;
+  auto ch = c_arg == kFreeChannel ? nullptr : channel_shared(c_arg);
+  if (!ch) return 0;
+  apply(ch.get());
   return 1;
 }
 
@@ -826,13 +889,25 @@ HLE_STDCALL_AS(kDll, FSOUND_3D_SetDopplerFactor, "_FSOUND_3D_SetDopplerFactor@4"
 }
 
 HLE_STDCALL_AS(kDll, FSOUND_3D_SetAttributes, "_FSOUND_3D_SetAttributes@12", 3) {
-  auto ch = (int)arg(c, 0) == kFreeChannel ? nullptr : channel_shared((int)arg(c, 0));
-  if (!ch) return 0;
+  const int c_arg = (int)arg(c, 0);
   const uint32_t pos = arg(c, 1), vel = arg(c, 2);
-  std::lock_guard<std::mutex> lock(ch->m);
-  if (pos) ch->pos3d = {bits2f32(ld32(pos)), bits2f32(ld32(pos + 4)), bits2f32(ld32(pos + 8))};
   (void)vel;  // per-channel velocity is stored nowhere (doppler not simulated)
-  if (pos) ch->is3d = true;
+  auto apply = [&](FmodChannel* ch) {
+    std::lock_guard<std::mutex> lock(ch->m);
+    if (pos) {
+      ch->pos3d = {bits2f32(ld32(pos)), bits2f32(ld32(pos + 4)), bits2f32(ld32(pos + 8))};
+      if (!ch->smp || ((ch->smp->mode & (k2D | kHW2D)) == 0)) {
+        ch->is3d = true;
+      }
+    }
+  };
+  if (c_arg == kAllChannels) {
+    for (auto& ch : g_channels) if (ch) apply(ch.get());
+    return 1;
+  }
+  auto ch = c_arg == kFreeChannel ? nullptr : channel_shared(c_arg);
+  if (!ch) return 0;
+  apply(ch.get());
   return 1;
 }
 
@@ -912,20 +987,21 @@ HLE_STDCALL_AS(kDll, FSOUND_Stream_PlayEx, "_FSOUND_Stream_PlayEx@16", 4) {
   auto smp = st->sentence_smp ? st->sentence_smp : st->subs[0];
   const int ch = start_channel(smp, (int)arg(c, 0), arg(c, 3) != 0);
   if (ch >= 0) {
-    if ((st->mode & (kLoopNormal | kLoopBidi)) != 0 && smp->loop_end <= smp->loop_start) {
+    if ((st->mode & (kLoopNormal | kLoopBidi)) != 0) {
       if (auto chan = channel_shared(ch)) {
         std::lock_guard<std::mutex> lock(chan->m);
         const uint32_t total_frames =
             (uint32_t)(smp->pcm.size() / (smp->channels ? smp->channels : 1));
-        chan->loop_start = 0;
-        chan->loop_end = total_frames;
+        chan->loop_start = smp->loop_start;
+        chan->loop_end = smp->loop_end > smp->loop_start ? smp->loop_end : total_frames;
         chan->looping = true;
       }
     }
     st->active_ch = ch;
     if (trace_enabled("audio"))
-      log(Log::Hle, "fmod: Stream_PlayEx ch=%d stream=%08x paused=%u", ch, arg(c, 1),
-          arg(c, 3) != 0);
+      log(Log::Hle, "fmod: Stream_PlayEx ch=%d stream=%08x (%s) smode=%x mode=%x loop=%u..%u frames=%zu paused=%u",
+          ch, arg(c, 1), smp->name.c_str(), st->mode, smp->mode, smp->loop_start, smp->loop_end,
+          smp->pcm.size() / (smp->channels ? smp->channels : 1), arg(c, 3) != 0);
   }
   return ch < 0 ? (uint32_t)-1 : (uint32_t)ch;
 }
@@ -1040,6 +1116,8 @@ HLE_STDCALL_AS(kDll, FMUSIC_LoadSongEx, "_FMUSIC_LoadSongEx@24", 6) {
   mod->samples = std::move(samples);
   std::lock_guard<std::mutex> lock(g_res_m);
   g_modules[h] = mod;
+  if (trace_enabled("audio"))
+    log(Log::Hle, "fmod: FMUSIC_LoadSongEx handle=%08x samples=%zu", h, mod->samples.size());
   return h;
 }
 

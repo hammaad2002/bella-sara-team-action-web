@@ -4,10 +4,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../core/rt.h"
@@ -157,27 +159,56 @@ void gl_set_swap_interval(int interval) { SDL_GL_SetSwapInterval(interval); }
 namespace {
 void (*g_audio_render)(float*, int) = nullptr;
 void audio_callback(void*, Uint8* stream, int len) { g_audio_render((float*)stream, len / (int)(2 * sizeof(float))); }
+std::atomic<bool> g_audio_timer_running{false};
+std::thread g_audio_timer_thread;
+SDL_AudioDeviceID g_audio_dev = 0;
+
+void start_timer_thread(int rate, void (*render)(float*, int)) {
+  if (g_audio_timer_running.exchange(true)) return;
+  g_audio_timer_thread = std::thread([rate, render] {
+    const int frames_per_buf = 1024;
+    std::vector<float> buf(frames_per_buf * 2);
+    const auto interval = std::chrono::nanoseconds((uint64_t)frames_per_buf * 1000000000ULL / rate);
+    auto next = std::chrono::steady_clock::now();
+    while (g_audio_timer_running.load(std::memory_order_relaxed)) {
+      next += interval;
+      render(buf.data(), frames_per_buf);
+      std::this_thread::sleep_until(next);
+    }
+  });
+  g_audio_timer_thread.detach();  // process exit must not hit a joinable std::thread (terminate)
+}
 }  // namespace
 
 bool audio_open(int rate, void (*render)(float* out, int frames)) {
-  if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
-    rt::log(rt::Log::Warn, "SDL audio init failed: %s", SDL_GetError());
-    return false;
-  }
   g_audio_render = render;
-  SDL_AudioSpec want{}, have{};
-  want.freq = rate;
-  want.format = AUDIO_F32SYS;
-  want.channels = 2;
-  want.samples = 1024;
-  want.callback = audio_callback;
-  SDL_AudioDeviceID dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
-  if (!dev) {
-    rt::log(rt::Log::Warn, "SDL_OpenAudioDevice failed: %s", SDL_GetError());
-    return false;
+  const bool hidden = headless_test_mode();
+
+  // In non-hidden/normal runs, attempt to open the actual SDL audio device.
+  if (!hidden) {
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0) {
+      SDL_AudioSpec want{}, have{};
+      want.freq = rate;
+      want.format = AUDIO_F32SYS;
+      want.channels = 2;
+      want.samples = 1024;
+      want.callback = audio_callback;
+      g_audio_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+      if (g_audio_dev) {
+        SDL_PauseAudioDevice(g_audio_dev, 0);
+        rt::log(rt::Log::Info, "audio: %d Hz, %d-frame buffer", have.freq, have.samples);
+        return true;
+      }
+      rt::log(rt::Log::Warn, "SDL_OpenAudioDevice failed: %s — falling back to timer thread", SDL_GetError());
+    } else {
+      rt::log(rt::Log::Warn, "SDL audio init failed: %s — falling back to timer thread", SDL_GetError());
+    }
   }
-  SDL_PauseAudioDevice(dev, 0);
-  rt::log(rt::Log::Info, "audio: %d Hz, %d-frame buffer", have.freq, have.samples);
+
+  // In BELLA_HIDDEN/dump runs or when SDL audio output is unavailable, pull the mixer
+  // at real-time rate via a timer thread so dumps and audio timing work reliably.
+  start_timer_thread(rate, render);
+  rt::log(rt::Log::Info, "audio: %d Hz, 1024-frame buffer (timer thread)", rate);
   return true;
 }
 

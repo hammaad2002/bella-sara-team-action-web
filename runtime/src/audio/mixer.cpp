@@ -29,6 +29,7 @@ struct WavDump {
     fwrite(&riff, 4, 1, f);
     fseek(f, 40, SEEK_SET);
     fwrite(&data_bytes, 4, 1, f);
+    fseek(f, 0, SEEK_END);
     fflush(f);
   }
   void close() {

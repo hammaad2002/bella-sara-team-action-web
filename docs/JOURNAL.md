@@ -267,3 +267,8 @@ Plan and milestone exit criteria: `docs/PLAN.md`.
   ~30 fps and Chrome reaches the title in seconds.
 - Runtime self-tests link in the no-game build again (`runtime/tests/plat_stubs.cpp`); `tools/build-release.sh`
   and `tools/web-release-test.mjs` accept `Bella_Sara.iso`.
+- **No audio.** FMOD volume was tapered at -0.4 dB/step (`db100_to_gain`), so the game's music (`SetVolume 64`)
+  played at about -76 dB and effects (179) at -30 dB; FMOD 3 software volume is linear 0..255. Effects also looped
+  forever (the `effects.ffs` header loop range spans each whole sample; only mode bits decide looping) and
+  `SetPan(-1)` (FSOUND_STEREOPAN) was clamped to hard left. Hidden/dump runs pull the mixer from a real-time
+  timer thread; the WAV dump no longer overwrites itself (seek to end after patching the header).

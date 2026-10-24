@@ -54,6 +54,8 @@ interface DevState {
   captures: Record<number, string>;
   log: string[];
   state: string;
+  audio?: AudioContext;
+  audioNode?: AudioWorkletNode;
 }
 const dev: DevState = { frames: 0, captures: {}, log: [], state: "init" };
 (window as unknown as { __bella: DevState }).__bella = dev;
@@ -292,6 +294,17 @@ async function play() {
     processorOptions: { buffer: engine.HEAPU8.buffer, header },
   });
   node.connect(audio.destination);
+  dev.audio = audio;
+  dev.audioNode = node;
+
+  const resumeAudio = () => {
+    if (audio.state !== "running") {
+      void audio.resume();
+    }
+  };
+  window.addEventListener("pointerdown", resumeAudio, { capture: true });
+  window.addEventListener("pointerup", resumeAudio, { capture: true }); // touch activates on pointerup
+  window.addEventListener("keydown", resumeAudio, { capture: true });
   void audio.resume();
 
   if (game) {
