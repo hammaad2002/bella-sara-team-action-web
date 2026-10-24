@@ -41,6 +41,7 @@ struct Texture8 : public rt::ComObject {
   std::vector<TexLevel> level;
   std::vector<uint32_t> level_surface;
   size_t slot_index(uint32_t face, uint32_t lv) const { return (is_cube ? (size_t)face * levels : 0) + lv; }
+  ~Texture8() override;
 };
 
 struct TextureLevelSurface8 : public rt::ComObject {
@@ -49,7 +50,7 @@ struct TextureLevelSurface8 : public rt::ComObject {
   uint32_t face = 0;
   uint32_t level = 0;
   ~TextureLevelSurface8() override {
-    if (tex && tex->refs > 0) tex->refs--;
+    if (tex && tex->refs > 0) rt::com_Release(nullptr, tex);
   }
 };
 
@@ -58,6 +59,7 @@ struct VertexBuffer8 : public rt::ComObject {
   uint32_t length = 0, usage = 0, fvf = 0, pool = 0;
   uint32_t mem = 0;
   uint32_t gl_buf = 0;
+  ~VertexBuffer8() override;
 };
 
 struct IndexBuffer8 : public rt::ComObject {
@@ -65,6 +67,7 @@ struct IndexBuffer8 : public rt::ComObject {
   uint32_t length = 0, usage = 0, format = 0, pool = 0;
   uint32_t mem = 0;
   uint32_t gl_buf = 0;
+  ~IndexBuffer8() override;
 };
 
 struct Shader8 : public rt::ComObject {
@@ -111,6 +114,9 @@ struct Surface8 : public rt::ComObject {
       mem = rt::heap_alloc(rt::process_heap(), pitch * d3d::level_rows(format, height), true);
     }
     return mem;
+  }
+  ~Surface8() override {
+    if (mem) rt::heap_free(rt::process_heap(), mem);
   }
 };
 

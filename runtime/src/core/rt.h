@@ -74,6 +74,7 @@ uint32_t heap_realloc(uint32_t heap, uint32_t ptr, uint32_t size, bool zero);
 bool heap_free(uint32_t heap, uint32_t ptr);
 uint32_t heap_size(uint32_t heap, uint32_t ptr);
 uint32_t process_heap();
+void mem_log_stats();  // trace channel "mem"
 
 // ---------------------------------------------------------------------------------------------
 // Threads.
@@ -133,6 +134,7 @@ struct ImportInfo {
 std::vector<ImportInfo> import_list();
 [[noreturn]] void process_exit(uint32_t code);
 void user32_pump();
+void user32_fullscreen_size(int w, int h);
 
 // Argument and return helpers for HLE functions (the return address is at [esp]).
 inline uint32_t arg(Cpu* c, int i) { return ld32(c->esp + 4 + 4 * (uint32_t)i); }

@@ -94,7 +94,7 @@ void recorder_create_device(Device* dev) {
   dev->depth_stencil = dev->auto_depth;
   add_ref(dev->auto_depth);
   // The executor starts from the same default state (init_default_state) and back buffer.
-  g_stream.op(cmd::OpBackBuffer, {dev->pp[0], dev->pp[1], dev->pp[13] == 0x80000000u ? 0u : 1u, dev->pp[2]});
+  g_stream.op(cmd::OpBackBuffer, {dev->pp[0], dev->pp[1], dev->pp[13] == 0x80000000u ? 0u : 1u, dev->pp[2], 0u});
   g_stream.op(cmd::OpSetRenderTarget, {0, 1, 0, 0, 0});
   SurfaceRef d = surface_ref(dev->auto_depth);
   g_stream.op(cmd::OpSetDepthStencil, {d.kind, d.id});

@@ -307,6 +307,9 @@ void poll_events(std::vector<InputEvent>& out) {
       }
       case SDL_WINDOWEVENT:
         if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED || e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+          // A hidden test window gains and loses focus at random; the game ignores input while
+          // inactive, which made scripted runs nondeterministic. Headless runs stay focused.
+          if (headless_test_mode() && e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) break;
           ev.kind = e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED ? InputEvent::FocusGained : InputEvent::FocusLost;
           if (ev.kind == InputEvent::FocusLost) memset(g_keys, 0, sizeof g_keys);
           out.push_back(ev);
@@ -660,10 +663,9 @@ void mouse_pos(int* x, int* y) {
   if (y) *y = g_mouse_y;
 }
 
+// SetCursorPos moves the pointer without producing DirectInput motion.
 void set_mouse_pos(int x, int y) {
   std::lock_guard<std::mutex> lock(g_mouse_mutex);
-  g_mouse.dx += x - g_mouse_x;
-  g_mouse.dy += y - g_mouse_y;
   g_mouse_x = x;
   g_mouse_y = y;
   if (g_window) SDL_WarpMouseInWindow(g_window, x, y);

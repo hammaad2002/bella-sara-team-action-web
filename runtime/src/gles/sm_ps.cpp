@@ -147,6 +147,7 @@ struct Translator {
     std::string name, mask;
     uint32_t type = 0, index = 0, mbits = 0xf;
     bool sat = false;
+    const char* scale = nullptr;  // instruction modifier _x2/_x4/_x8/_d2/_d4/_d8
   };
 
   Dst dst(size_t& i) {
@@ -196,14 +197,26 @@ struct Translator {
     uint32_t mod = (tok >> 20) & 0xf;
     if ((mod & ~1u) != 0) err = "unsupported destination modifier bits " + std::to_string(mod);
     d.sat = (mod & 1) != 0;
+    switch ((tok >> 24) & 0xf) {  // D3DSP_DSTSHIFT: signed 4-bit power of two
+      case 0: break;
+      case 1: d.scale = "2.0"; break;
+      case 2: d.scale = "4.0"; break;
+      case 3: d.scale = "8.0"; break;
+      case 15: d.scale = "0.5"; break;
+      case 14: d.scale = "0.25"; break;
+      case 13: d.scale = "0.125"; break;
+      default: err = "unsupported destination shift " + std::to_string((tok >> 24) & 0xf); break;
+    }
     return d;
   }
 
   // Write `expr` through d's writemask. ps_1_x saturates arithmetic to the [-1, 1] temp range
   // automatically; the _sat destination modifier clamps to [0, 1]; raw writes (tex family) skip
   // saturation entirely.
-  void assign(const Dst& d, const std::string& expr, int saturate = 1) {
+  void assign(const Dst& d, const std::string& expr0, int saturate = 1) {
     if (!err.empty()) return;
+    // The shift scales the result before the register's clamp.
+    std::string expr = d.scale ? "((" + expr0 + ") * " + d.scale + ")" : expr0;
     std::string e = saturate > 0 ? "clamp(" + expr + ", -1.0, 1.0)" : expr;
     if (d.sat) e = "clamp(" + expr + ", 0.0, 1.0)";
     body += "  " + d.name + d.mask + " = (" + e + ")" + d.mask + ";\n";

@@ -45,7 +45,7 @@ constexpr uint32_t DIEDFL_FORCEFEEDBACK = 0x100;
 constexpr uint32_t DIERR_INVALIDPARAM = 0x80070057, DIERR_NOTACQUIRED = 0x8007000c, DIERR_INPUTLOST = 0x8007001e,
                    DIERR_DEVICENOTREG = 0x80040154, DIERR_OBJECTNOTFOUND = 0x80070002, DIERR_UNSUPPORTED = 0x80004001,
                    DIERR_UNPLUGGED = 0x80040209;
-constexpr uint32_t DI_OK = 0, DIENUM_CONTINUE = 1;
+constexpr uint32_t DI_OK = 0, DI_NOEFFECT = 1, DIENUM_CONTINUE = 1;
 constexpr uint32_t DIDFT_RELAXIS = 0x1, DIDFT_ABSAXIS = 0x2, DIDFT_AXIS = 0x3, DIDFT_PSHBUTTON = 0x4, DIDFT_BUTTON = 0xc, DIDFT_POV = 0x10,
                    DIDFT_FFACTUATOR = 0x01000000;
 constexpr uint32_t DIPROP_RANGE = 4, DIPROP_DEADZONE = 5, DIPROP_SATURATION = 6, DIPROP_FFGAIN = 7, DIPROP_AXISMODE = 8,
@@ -356,7 +356,7 @@ std::vector<int> prop_axes(uint32_t hdr) {
 uint32_t dev_SetProperty(Cpu* c, ComObject* self) {
   auto* d = dev(self);
   uint32_t prop = arg(c, 1), hdr = arg(c, 2);
-  log(Log::Info, "dinput8: SetProperty kind=%d prop=%u val=%u", (int)d->kind, prop, ld32(hdr + 16));
+  if (trace_enabled("input")) log(Log::Info, "dinput8: SetProperty kind=%d prop=%u val=%u", (int)d->kind, prop, ld32(hdr + 16));
   if (d->kind == Kind::Keyboard || d->kind == Kind::Mouse) {
     if (prop == DIPROP_BUFFERSIZE) {
       d->buffer_size = ld32(hdr + 16);
@@ -431,8 +431,10 @@ bool needs_acquire(const Device* d) {
 
 uint32_t dev_Acquire(Cpu*, ComObject* self) {
   auto* d = dev(self);
-  log(Log::Info, "dinput8: Acquire kind=%d", (int)d->kind);
+  if (trace_enabled("input")) log(Log::Info, "dinput8: Acquire kind=%d", (int)d->kind);
   if (d->kind == Kind::Pad && !pad_connected(d)) return DIERR_UNPLUGGED;
+  // Motion made while the mouse was not acquired is not reported once it is.
+  if (d->kind == Kind::Mouse && !d->acquired) plat::take_mouse_state();
   d->acquired = true;
   return DI_OK;
 }
@@ -441,9 +443,12 @@ uint32_t dev_Unacquire(Cpu*, ComObject* self) {
   return DI_OK;
 }
 
+// Keyboard and mouse are not polled devices: Poll reports DI_NOEFFECT once acquired and
+// DIERR_NOTACQUIRED before. The game (0x682080) calls Acquire only after Poll fails, so reporting
+// success for its unacquired exclusive mouse left mouse buttons dead.
 uint32_t dev_Poll(Cpu*, ComObject* self) {
   auto* d = dev(self);
-  if (d->kind != Kind::Pad) return DI_OK;
+  if (d->kind != Kind::Pad) return d->acquired ? DI_NOEFFECT : DIERR_NOTACQUIRED;
   if (!pad_connected(d)) return DIERR_INPUTLOST;
   return d->acquired ? DI_OK : DIERR_NOTACQUIRED;
 }
@@ -493,7 +498,7 @@ uint32_t dev_GetDeviceState(Cpu* c, ComObject* self) {
     plat::MouseState m = plat::take_mouse_state();
     int mx = 0, my = 0;
     plat::mouse_pos(&mx, &my);
-    log(Log::Info, "dinput8: Mouse GetDeviceState dx=%d dy=%d pos=(%d,%d) axis_mode=%u", m.dx, m.dy, mx, my, d->axis_mode);
+    if (trace_enabled("input")) log(Log::Info, "dinput8: Mouse GetDeviceState dx=%d dy=%d pos=(%d,%d) axis_mode=%u", m.dx, m.dy, mx, my, d->axis_mode);
     st32(out + 0, (uint32_t)m.dx);
     st32(out + 4, (uint32_t)m.dy);
     st32(out + 8, (uint32_t)m.wheel);
@@ -521,7 +526,7 @@ uint32_t dev_GetDeviceData(Cpu* c, ComObject* self) {
   user32_pump();
   auto* d = dev(self);
   uint32_t objsize = arg(c, 1), out = arg(c, 2), inout = arg(c, 3), flags = arg(c, 4);
-  log(Log::Info, "dinput8: GetDeviceData kind=%d objsize=%u inout=%u bufsize=%u", (int)d->kind, objsize, inout ? ld32(inout) : 0, d->buffer_size);
+  if (trace_enabled("input")) log(Log::Info, "dinput8: GetDeviceData kind=%d objsize=%u inout=%u bufsize=%u", (int)d->kind, objsize, inout ? ld32(inout) : 0, d->buffer_size);
   if (needs_acquire(d) && !d->acquired) return DIERR_NOTACQUIRED;
   uint32_t cap = ld32(inout), n = 0;
   const bool peek = (flags & 1) != 0;

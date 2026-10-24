@@ -3,13 +3,37 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include "../core/objects.h"
 #include "../core/rt.h"
 
 using namespace rt;
+
+namespace {
+constexpr size_t kWholeFileThreshold = 4 * 1024 * 1024;  // files <= 4 MiB loaded whole
+constexpr size_t kWindowSize = 1024 * 1024;              // 1 MiB aligned window
+
+// Read cache: avoids millions of tiny host stdio / WasmFS OPFS reads on read-only assets.
+struct CachedFileObject : FileObject {
+  std::mutex mutex;
+  int64_t file_size_val = 0;
+  int64_t pos = 0;
+  bool whole = false;
+  int64_t window_offset = -1;
+  size_t window_size = 0;
+  std::vector<uint8_t> buffer;
+};
+
+int64_t file_size(FILE* fp) {
+  struct stat st;
+  return fstat(fileno(fp), &st) == 0 ? (int64_t)st.st_size : -1;
+}
+}  // namespace
+
 
 // Link anchor: forces this translation unit (and its HLE registrars) to be kept in a static link.
 void hle_link_kernel32_files() {}
@@ -73,20 +97,47 @@ uint32_t open_file(const std::string& guest, uint32_t access, uint32_t dispositi
     set_last_error(want_write ? ERROR_ACCESS_DENIED : ERROR_FILE_NOT_FOUND);
     return kInvalidHandle;
   }
-  auto f = std::make_shared<FileObject>();
-  f->fp = fp;
-  f->guest_path = guest;
-  f->host_path = hostp;
-  f->writable = want_write;
+  std::shared_ptr<FileObject> f;
+  if (!want_write && strcmp(mode, "rb") == 0) {
+    int64_t sz = file_size(fp);
+    if (sz >= 0) {
+      auto cf = std::make_shared<CachedFileObject>();
+      cf->fp = fp;
+      cf->guest_path = guest;
+      cf->host_path = hostp;
+      cf->writable = false;
+      cf->file_size_val = sz;
+      cf->pos = 0;
+      if ((size_t)sz <= kWholeFileThreshold) {
+        cf->whole = true;
+        cf->buffer.resize((size_t)sz);
+        if (sz > 0) {
+          size_t nread = fread(cf->buffer.data(), 1, (size_t)sz, fp);
+          cf->buffer.resize(nread);
+          cf->file_size_val = (int64_t)nread;
+          fseeko(fp, 0, SEEK_SET);
+        }
+        cf->window_offset = 0;
+        cf->window_size = cf->buffer.size();
+      } else {
+        cf->whole = false;
+        cf->window_offset = -1;
+        cf->window_size = 0;
+      }
+      f = cf;
+    }
+  }
+  if (!f) {
+    f = std::make_shared<FileObject>();
+    f->fp = fp;
+    f->guest_path = guest;
+    f->host_path = hostp;
+    f->writable = want_write;
+  }
   // CREATE_ALWAYS / OPEN_ALWAYS report ERROR_ALREADY_EXISTS when the file existed.
   set_last_error((disposition == CREATE_ALWAYS || disposition == OPEN_ALWAYS) && exists ? (uint32_t)ERROR_ALREADY_EXISTS : 0u);
   if (trace_enabled("file")) log(Log::Info, "CreateFile(%s, %s) -> %s", guest.c_str(), mode, hostp.c_str());
   return handle_new(f);
-}
-
-int64_t file_size(FILE* fp) {
-  struct stat st;
-  return fstat(fileno(fp), &st) == 0 ? (int64_t)st.st_size : -1;
 }
 }  // namespace
 
@@ -107,7 +158,58 @@ HLE_STDCALL(kDll, ReadFile, 5) {
     set_last_error(ERROR_INVALID_HANDLE);
     return 0;
   }
-  if (ov) fseeko(f->fp, (off_t)((uint64_t)ld32(ov + 12) << 32 | ld32(ov + 8)), SEEK_SET);
+  auto cf = dynamic_cast<CachedFileObject*>(f.get());
+  if (cf) {
+    std::lock_guard<std::mutex> lock(cf->mutex);
+    int64_t read_pos = ov ? (int64_t)((uint64_t)ld32(ov + 12) << 32 | ld32(ov + 8)) : cf->pos;
+    size_t got = 0;
+    if (n && read_pos >= 0 && read_pos < cf->file_size_val) {
+      size_t avail = (size_t)(cf->file_size_val - read_pos);
+      size_t to_read = std::min((size_t)n, avail);
+      if (cf->whole) {
+        memcpy(host(buf), cf->buffer.data() + read_pos, to_read);
+        got = to_read;
+      } else if (to_read > kWindowSize) {
+        fseeko(cf->fp, (off_t)read_pos, SEEK_SET);
+        got = fread(host(buf), 1, to_read, cf->fp);
+        cf->window_offset = -1;
+        cf->window_size = 0;
+      } else {
+        while (got < to_read) {
+          int64_t cur_pos = read_pos + got;
+          if (cur_pos >= cf->window_offset && cur_pos < cf->window_offset + (int64_t)cf->window_size) {
+            size_t chunk = std::min(to_read - got, (size_t)(cf->window_offset + (int64_t)cf->window_size - cur_pos));
+            memcpy(host(buf) + got, cf->buffer.data() + (cur_pos - cf->window_offset), chunk);
+            got += chunk;
+          } else {
+            int64_t win_start = (cur_pos / (int64_t)kWindowSize) * (int64_t)kWindowSize;
+            int64_t bytes_to_win_end = cf->file_size_val - win_start;
+            size_t win_len = std::min((int64_t)kWindowSize, bytes_to_win_end);
+            if (cf->buffer.size() < kWindowSize) cf->buffer.resize(kWindowSize);
+            fseeko(cf->fp, (off_t)win_start, SEEK_SET);
+            size_t nrefill = fread(cf->buffer.data(), 1, win_len, cf->fp);
+            cf->window_offset = win_start;
+            cf->window_size = nrefill;
+            if (nrefill == 0) break;
+          }
+        }
+      }
+    }
+    cf->pos = read_pos + got;
+    if (nread) st32(nread, (uint32_t)got);
+    if (ov) {
+      st32(ov + 0, 0);
+      st32(ov + 4, (uint32_t)got);
+      if (got == 0 && n) {
+        set_last_error(ERROR_HANDLE_EOF);
+        return 0;
+      }
+    }
+    return 1;
+  }
+  if (ov) {
+    fseeko(f->fp, (off_t)((uint64_t)ld32(ov + 12) << 32 | ld32(ov + 8)), SEEK_SET);
+  }
   size_t got = n ? fread(host(buf), 1, n, f->fp) : 0;
   if (nread) st32(nread, (uint32_t)got);
   if (ov) {
@@ -157,6 +259,20 @@ HLE_STDCALL(kDll, SetFilePointer, 4) {
     set_last_error(ERROR_INVALID_HANDLE);
     return 0xffffffffu;
   }
+  auto cf = dynamic_cast<CachedFileObject*>(f.get());
+  if (cf) {
+    std::lock_guard<std::mutex> lock(cf->mutex);
+    int64_t base = method == 0 ? 0 : method == 1 ? cf->pos : cf->file_size_val;
+    int64_t new_pos = base + dist;
+    if (new_pos < 0) {
+      set_last_error(131);  // ERROR_NEGATIVE_SEEK
+      return 0xffffffffu;
+    }
+    cf->pos = new_pos;
+    if (hi_ptr) st32(hi_ptr, (uint32_t)((uint64_t)new_pos >> 32));
+    set_last_error(0);
+    return (uint32_t)new_pos;
+  }
   int whence = method == 0 ? SEEK_SET : method == 1 ? SEEK_CUR : SEEK_END;
   if (fseeko(f->fp, (off_t)dist, whence) != 0) {
     set_last_error(131);  // ERROR_NEGATIVE_SEEK
@@ -174,7 +290,8 @@ HLE_STDCALL(kDll, GetFileSize, 2) {
     set_last_error(ERROR_INVALID_HANDLE);
     return 0xffffffffu;
   }
-  int64_t size = file_size(f->fp);
+  auto cf = dynamic_cast<CachedFileObject*>(f.get());
+  int64_t size = cf ? cf->file_size_val : file_size(f->fp);
   if (arg(c, 1)) st32(arg(c, 1), (uint32_t)((uint64_t)size >> 32));
   return (uint32_t)size;
 }
@@ -351,7 +468,8 @@ HLE_STDCALL(kDll, CreateFileMappingA, 6) {
   auto m = std::make_shared<MappingObject>();
   m->file = f;
   uint32_t lo = arg(c, 4);
-  m->size = lo ? lo : (uint32_t)file_size(f->fp);
+  auto cf = dynamic_cast<CachedFileObject*>(f.get());
+  m->size = lo ? lo : (uint32_t)(cf ? cf->file_size_val : file_size(f->fp));
   return handle_new(m);
 }
 
@@ -369,10 +487,23 @@ HLE_STDCALL(kDll, MapViewOfFile, 5) {
     return 0;
   }
   // Read-only snapshot of the file (the game only maps files for reading).
-  long pos = ftell(m->file->fp);
-  fseeko(m->file->fp, (off_t)off, SEEK_SET);
-  size_t got = fread(host(base), 1, size, m->file->fp);
-  fseek(m->file->fp, pos, SEEK_SET);
+  auto cf = dynamic_cast<CachedFileObject*>(m->file.get());
+  size_t got = 0;
+  if (cf && cf->whole) {
+    std::lock_guard<std::mutex> lock(cf->mutex);
+    if (off < (uint64_t)cf->file_size_val) {
+      size_t avail = std::min((size_t)size, (size_t)(cf->file_size_val - off));
+      memcpy(host(base), cf->buffer.data() + off, avail);
+      got = avail;
+    }
+  } else {
+    std::unique_lock<std::mutex> lock;
+    if (cf) lock = std::unique_lock<std::mutex>(cf->mutex);
+    long pos = ftell(m->file->fp);
+    fseeko(m->file->fp, (off_t)off, SEEK_SET);
+    got = fread(host(base), 1, size, m->file->fp);
+    fseek(m->file->fp, pos, SEEK_SET);
+  }
   log(Log::Debug, "MapViewOfFile(%s, %u bytes) -> %08x (%zu read)", m->file->guest_path.c_str(), size, base, got);
   return base;
 }

@@ -39,6 +39,24 @@ static uint32_t mip_level_count(uint32_t w, uint32_t h) {
   return full;
 }
 
+// Releasing a D3D8 resource must give back its guest-memory shadow copy and its GL object; the HLE heap is a
+// fixed 640 MB mspace, so leaking these exhausts it after a few level loads.
+Texture8::~Texture8() {
+  for (TexLevel& lv : level)
+    if (lv.mem) heap_free(process_heap(), lv.mem);
+  if (gl_tex) d3d8_cmd_stream().op(cmd::OpDestroyTexture, {gl_tex});
+}
+
+VertexBuffer8::~VertexBuffer8() {
+  if (gl_buf) d3d8_cmd_stream().op(cmd::OpDestroyBuffer, {gl_buf});
+  if (mem) heap_free(process_heap(), mem);
+}
+
+IndexBuffer8::~IndexBuffer8() {
+  if (gl_buf) d3d8_cmd_stream().op(cmd::OpDestroyBuffer, {gl_buf});
+  if (mem) heap_free(process_heap(), mem);
+}
+
 Texture8* create_texture8(uint32_t w, uint32_t h, uint32_t levels, uint32_t usage, uint32_t fmt, uint32_t pool,
                           uint32_t gl_tex) {
   auto* t = new Texture8();

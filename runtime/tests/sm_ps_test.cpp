@@ -292,6 +292,18 @@ int main() {
     check(contains(g, "if (!(a > u_aref)) discard;"), "alpha test: emits discard comparison");
   }
 
+  // 11. Instruction modifiers (destination shift): mul_x2 and mul_d2 scale before the clamp.
+  {
+    PsInfo info{};
+    std::string err;
+    std::string g = sm_pixel_glsl({ps11, OP_TEX, dst(kRtex, 0, 0), OP_MUL, dst(kRtemp, 0) | 1u << 24, src(kRtex, 0), src(kRinput, 0),
+                                   OP_MUL, dst(kRtemp, 1) | 15u << 24, src(kRtemp, 0), src(kRinput, 0), psEnd},
+                                  &info, &err);
+    check(!g.empty() && info.ok, "shift: translated ok");
+    check(contains(g, "clamp(((t0 * v0) * 2.0), -1.0, 1.0)"), "shift: _x2 doubles before the clamp");
+    check(contains(g, "clamp(((r0 * v0) * 0.5), -1.0, 1.0)"), "shift: _d2 halves before the clamp");
+  }
+
   printf(fails ? "sm_ps_test: %d FAILURES\n" : "sm_ps_test: all passed\n", fails);
   return fails ? 1 : 0;
 }

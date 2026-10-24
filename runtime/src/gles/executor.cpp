@@ -260,7 +260,7 @@ static void upload_texture(uint32_t id, uint32_t face, uint32_t level, uint32_t 
   if (f.compressed) {
     log_texture_upload(id, level, w, h, fmt, nbytes, data);
     glCompressedTexSubImage2D(target, (GLint)level, 0, 0, (GLsizei)w, (GLsizei)h, f.internal, (GLsizei)nbytes, data);
-  } else if (f.expand) {
+  } else if (f.expand || t.rt) {  // RT textures are always RGBA8 in GL; repack16 would under-fill the upload and crash the driver
     auto rgba = to_rgba8(fmt, data, w, h, pitch);
     if (rt::trace_enabled("uploads") || rt::trace_enabled("debug")) {
       uint64_t sum = 0;
@@ -288,21 +288,50 @@ static void create_renderbuffer(uint32_t id, uint32_t w, uint32_t h, uint32_t fm
 
 // ---- Render targets ------------------------------------------------------------------------------
 
-static void ensure_backbuffer(uint32_t w, uint32_t h) {
-  if (g.bb_tex && g.bbw == w && g.bbh == h) return;
+static void ensure_backbuffer(uint32_t w, uint32_t h, uint32_t samples) {
+  static bool warned = false;
+  GLint max_s = 0;
+  glGetIntegerv(GL_MAX_SAMPLES, &max_s);
+  if (samples > (uint32_t)max_s) samples = (uint32_t)max_s;
+  if (samples < 2) samples = 0;
+  if (g.bb_tex && g.bbw == w && g.bbh == h && g.bb_samples == samples) return;
   if (g.bb_tex) glDeleteTextures(1, &g.bb_tex);
-  g.bbw = w, g.bbh = h;
+  if (g.bb_ms_rb) glDeleteRenderbuffers(1, &g.bb_ms_rb);
+  if (g.bb_res_fbo) glDeleteFramebuffers(1, &g.bb_res_fbo);
+  g.bb_ms_rb = g.bb_res_fbo = 0;
+  g.bbw = w, g.bbh = h, g.bb_samples = samples, g.bb_dirty = false;
   glGenTextures(1, &g.bb_tex);
   glBindTexture(GL_TEXTURE_2D, g.bb_tex);
   glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, (GLsizei)w, (GLsizei)h);
+  if (samples) {
+    while (glGetError() != GL_NO_ERROR) {}
+    glGenRenderbuffers(1, &g.bb_ms_rb);
+    glBindRenderbuffer(GL_RENDERBUFFER, g.bb_ms_rb);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, (GLsizei)samples, GL_RGBA8, (GLsizei)w, (GLsizei)h);
+    if (glGetError() != GL_NO_ERROR) {
+      if (!warned) rt::log(rt::Log::Warn, "GL: %ux MSAA back buffer unavailable, using single sample", samples), warned = true;
+      glDeleteRenderbuffers(1, &g.bb_ms_rb);
+      g.bb_ms_rb = 0, g.bb_samples = 0;
+    } else {
+      rt::log(rt::Log::Info, "GL: MSAA back buffer %ux%u, %u samples", w, h, samples);
+    }
+  }
   for (auto& [k, fbo] : g.fbos) glDeleteFramebuffers(1, &fbo);
   g.fbos.clear();
+}
+
+// Fall back to the single-sample back buffer after an incomplete MSAA framebuffer.
+static void disable_msaa() {
+  rt::log(rt::Log::Warn, "GL: MSAA framebuffer incomplete, falling back to single sample");
+  uint32_t w = g.bbw, h = g.bbh;
+  ensure_backbuffer(w, h, 0);
 }
 
 // Attach a surface reference to the currently bound draw framebuffer.
 static void attach_color(const Target& t, GLenum attachment) {
   if (t.kind == 1) {
-    glFramebufferTexture2D(GL_FRAMEBUFFER, attachment, GL_TEXTURE_2D, g.bb_tex, 0);
+    if (g.bb_samples) glFramebufferRenderbuffer(GL_FRAMEBUFFER, attachment, GL_RENDERBUFFER, g.bb_ms_rb);
+    else glFramebufferTexture2D(GL_FRAMEBUFFER, attachment, GL_TEXTURE_2D, g.bb_tex, 0);
   } else if (t.kind == 2) {
     auto it = g.tex.find(t.id);
     if (it == g.tex.end()) return;
@@ -312,6 +341,8 @@ static void attach_color(const Target& t, GLenum attachment) {
 }
 
 GLuint fbo_for(const Target& color, const Target& depth) {
+  bool ms = color.kind == 1 && g.bb_samples;
+  if (ms) g.bb_dirty = true;  // callers of the MSAA FBO draw into it; readers use bb_read_fbo()
   uint64_t key = (uint64_t)color.kind << 60 ^ (uint64_t)color.id << 32 ^ (uint64_t)color.face << 28 ^ (uint64_t)color.level << 24 ^
                  (uint64_t)depth.kind << 22 ^ depth.id;
   auto it = g.fbos.find(key);
@@ -322,12 +353,48 @@ GLuint fbo_for(const Target& color, const Target& depth) {
   attach_color(color, GL_COLOR_ATTACHMENT0);
   if (depth.kind == 3) {
     auto rb = g.rbs.find(depth.id);
-    if (rb != g.rbs.end()) glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb->second.gl);
+    if (rb != g.rbs.end()) {
+      Rb& r = rb->second;
+      if (ms && r.ms_samples != g.bb_samples) {  // depth must match the back buffer's sample count
+        if (r.ms) glDeleteRenderbuffers(1, &r.ms);
+        glGenRenderbuffers(1, &r.ms);
+        glBindRenderbuffer(GL_RENDERBUFFER, r.ms);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, (GLsizei)g.bb_samples, GL_DEPTH24_STENCIL8, (GLsizei)r.w, (GLsizei)r.h);
+        r.ms_samples = g.bb_samples;
+      }
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, ms ? r.ms : r.gl);
+    }
   }
   GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+  if (ms && status != GL_FRAMEBUFFER_COMPLETE) {
+    glDeleteFramebuffers(1, &fbo);
+    disable_msaa();
+    return fbo_for(color, depth);
+  }
   if (status != GL_FRAMEBUFFER_COMPLETE) rt::log(rt::Log::Warn, "GL: incomplete framebuffer %04x (color kind %u id %u)", status, color.kind, color.id);
   g.fbos[key] = fbo;
   return fbo;
+}
+
+GLuint bb_read_fbo() {
+  if (!g.bb_samples) return fbo_for(Target{1, 0, 0, 0}, Target{});
+  // Look both FBOs up first: creating one binds GL_FRAMEBUFFER (read and draw).
+  bool dirty = g.bb_dirty;
+  GLuint ms_fbo = fbo_for(Target{1, 0, 0, 0}, Target{});
+  if (!g.bb_res_fbo) {
+    glGenFramebuffers(1, &g.bb_res_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, g.bb_res_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g.bb_tex, 0);
+  }
+  if (dirty) {
+    glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, ms_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g.bb_res_fbo);
+    glBlitFramebuffer(0, 0, (GLint)g.bbw, (GLint)g.bbh, 0, 0, (GLint)g.bbw, (GLint)g.bbh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    g.bb_dirty = false;
+    g.state_dirty = true;
+  }
+  return g.bb_res_fbo;
 }
 
 void target_size(const Target& t, uint32_t* w, uint32_t* h) {
@@ -460,7 +527,7 @@ static void maybe_dump_frame() {
     written++;
   }
   std::vector<uint8_t> px((size_t)g.bbw * g.bbh * 4);
-  glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_for(Target{1, 0, 0, 0}, Target{}));
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, bb_read_fbo());
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
   glReadPixels(0, 0, (GLsizei)g.bbw, (GLsizei)g.bbh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
   const char* dir = getenv("BELLA_DUMP_DIR");
@@ -479,13 +546,14 @@ static void maybe_dump_frame() {
 
 static void present() {
   g.frames++;
+  g.frame_draws = 0;
   plat::frame_presented(g.frames);
   rt::note_present();
   maybe_dump_frame();
   int ww, wh;
   plat::get_window_size(&ww, &wh);
   // Look the back buffer's FBO up first: creating it binds GL_FRAMEBUFFER (read and draw).
-  GLuint read = fbo_for(Target{1, 0, 0, 0}, Target{});
+  GLuint read = bb_read_fbo();
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
   glDisable(GL_SCISSOR_TEST);
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -499,7 +567,7 @@ static void present() {
   else dh = (int)std::lround(ww / sa);
   int dx = (ww - dw) / 2, dy = (wh - dh) / 2;
   glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
-  glBlitFramebuffer(0, 0, (GLint)g.bbw, (GLint)g.bbh, dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  glBlitFramebuffer(0, 0, (GLint)g.bbw, (GLint)g.bbh, dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_LINEAR);  // smooth non-integer window scaling
   plat::gl_swap();
   g.state_dirty = true;
 #if !defined(__EMSCRIPTEN__)
@@ -517,7 +585,12 @@ static void blit(const Target& src, const uint32_t* sr, const Target& dst, const
   glDisable(GL_SCISSOR_TEST);
   // Both FBOs are looked up before binding: creating one binds GL_FRAMEBUFFER (read and draw),
   // which used to turn a first blit to a new surface into a blit of that surface onto itself.
-  GLuint read = fbo_for(src, Target{}), draw = fbo_for(dst, Target{});
+  if (dst.kind == 1 && g.bb_samples) {  // GLES3 cannot blit into a multisampled framebuffer
+    static bool warned = false;
+    if (!warned) rt::log(rt::Log::Warn, "GL: StretchRect onto the MSAA back buffer is not supported, skipped"), warned = true;
+    return;
+  }
+  GLuint read = src.kind == 1 ? bb_read_fbo() : fbo_for(src, Target{}), draw = fbo_for(dst, Target{});
   uint32_t sx0 = sr[0], sy0 = sr[1], sx1 = sr[2], sy1 = sr[3];
   if (src.kind == dst.kind && src.id == dst.id && src.face == dst.face && src.level == dst.level) {
     // StretchRect within one surface: WebGL forbids blitting a framebuffer onto itself, so the
@@ -548,7 +621,7 @@ static void blit(const Target& src, const uint32_t* sr, const Target& dst, const
 }
 
 static void readback(const Target& t, uint32_t w, uint32_t h, uint32_t fmt, uint32_t dst, uint32_t pitch) {
-  glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_for(t, Target{}));
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, t.kind == 1 ? bb_read_fbo() : fbo_for(t, Target{}));
   std::vector<uint8_t> px((size_t)w * h * 4);
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
   glReadPixels(0, 0, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -615,6 +688,7 @@ void execute(const uint32_t* words, size_t n) {
       case cmd::OpCreateTexture: {
         uint32_t id = r.u32(), kind = r.u32(), w = r.u32(), h = r.u32(), levels = r.u32(), fmt = r.u32(), isrt = r.u32();
         create_texture(id, kind, w, h, levels, fmt, isrt != 0);
+        if (isrt && rt::trace_enabled("rt")) rt::log(rt::Log::Info, "RT create tex %u %ux%u fmt %u", id, w, h, fmt);
         break;
       }
       case cmd::OpDestroyTexture: {
@@ -653,6 +727,7 @@ void execute(const uint32_t* words, size_t n) {
         auto it = g.rbs.find(id);
         if (it != g.rbs.end()) {
           glDeleteRenderbuffers(1, &it->second.gl);
+          if (it->second.ms) glDeleteRenderbuffers(1, &it->second.ms);
           g.rbs.erase(it);
         }
         break;
@@ -735,7 +810,7 @@ void execute(const uint32_t* words, size_t n) {
         // D3D8 CreateDevice may record a desktop-sized back buffer when presentation parameters leave
         // BackBufferWidth/Height at zero; the first full-surface viewport still matches the real buffer.
         if (g.frames == 0 && g.rt[0].kind == 1 && v.x == 0 && v.y == 0 && v.w > 0 && v.h > 0 && (v.w != g.bbw || v.h != g.bbh)) {
-          ensure_backbuffer(v.w, v.h);
+          ensure_backbuffer(v.w, v.h, g.bb_samples);
           if (rt::trace_enabled("frames"))
             rt::log(rt::Log::Info, "GL: back buffer resized to %ux%u from viewport", v.w, v.h);
         }
@@ -814,6 +889,7 @@ void execute(const uint32_t* words, size_t n) {
         uint32_t i = r.u32();
         Target t{r.u32(), r.u32(), r.u32(), r.u32()};
         if (i < 4) g.rt[i] = t;
+        if (i == 0 && rt::trace_enabled("rt")) rt::log(rt::Log::Info, "RT set kind %u id %u (draws so far %u)", t.kind, t.id, g.frame_draws);
         break;
       }
       case cmd::OpSetDepthStencil:
@@ -900,18 +976,9 @@ void execute(const uint32_t* words, size_t n) {
         g.state_dirty = true;
         break;
       case cmd::OpBackBuffer: {
-        uint32_t w = r.u32(), h = r.u32(), vsync = r.u32(), fmt = r.u32();
-        // When D3D8 HLE substitutes desktop size for zero BackBufferWidth/Height, prefer the window
-        // client area (CreateWindowEx) so the render target matches the game's intended resolution.
-        int ww = 0, wh = 0;
-        plat::get_window_size(&ww, &wh);
-        if (ww > 0 && wh > 0 && (w != (uint32_t)ww || h != (uint32_t)wh) && (w > (uint32_t)ww || h > (uint32_t)wh)) {
-          if (rt::trace_enabled("frames"))
-            rt::log(rt::Log::Info, "GL: back buffer %ux%u clamped to window %dx%d", w, h, ww, wh);
-          w = (uint32_t)ww;
-          h = (uint32_t)wh;
-        }
-        ensure_backbuffer(w, h);
+        uint32_t w = r.u32(), h = r.u32(), vsync = r.u32(), fmt = r.u32(), samples = r.u32();
+        // The game's own resolution (settings.dat VM_WIDTH/HEIGHT); present() scales it to the window.
+        ensure_backbuffer(w, h, samples);
         g.bb_fmt = fmt;
         // The game asks for immediate presentation; natively we still sync to the display unless
         // BELLA_VSYNC=0 (the web build is paced by requestAnimationFrame).

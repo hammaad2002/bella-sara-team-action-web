@@ -13,10 +13,6 @@
 #include "platform/platform.h"
 #include "recomp.h"
 
-namespace plat {
-void get_display_size(int* width, int* height) { *width = 640, *height = 480; }
-void get_window_size(int* width, int* height) { *width = 640, *height = 480; }
-}  // namespace plat
 
 // Stubs so this harness can link libbella_runtime.a without translated game code or libdlmalloc.
 extern "C" {
@@ -48,6 +44,7 @@ void* mspace_realloc(mspace m, void* mem, size_t bytes) {
   return mspace_malloc(m, bytes);
 }
 void mspace_free(mspace, void*) {}
+void mspace_mallinfo(mspace) {}  // stats only (rt::mem_log_stats); never called in tests
 }
 
 static int g_failures = 0;

@@ -41,13 +41,19 @@ void push(const InputEvent& e) {
 
 bool init() { return true; }
 
+// The game's client area: the page maps pointer positions into it (the canvas size is the page's).
+std::atomic<int> g_client_w{800}, g_client_h{600};
+
 void create_window(const std::string& title, int width, int height) {
   g_window = true;
-  (void)title, (void)width, (void)height;  // the page decides the canvas size
+  (void)title;
+  set_window_size(width, height);
 }
 
 bool has_window() { return g_window; }
-void set_window_size(int, int) {}
+void set_window_size(int width, int height) {
+  if (width > 0 && height > 0) g_client_w = width, g_client_h = height;
+}
 
 void get_display_size(int* width, int* height) {
   *width = g_canvas_w;
@@ -98,10 +104,9 @@ void mouse_pos(int* x, int* y) {
   if (y) *y = g_mouse_y;
 }
 
+// SetCursorPos moves the pointer without producing DirectInput motion.
 void set_mouse_pos(int x, int y) {
   std::lock_guard<std::mutex> lock(g_input_mutex);
-  g_mouse.dx += x - g_mouse_x;
-  g_mouse.dy += y - g_mouse_y;
   g_mouse_x = x;
   g_mouse_y = y;
 }
@@ -184,6 +189,9 @@ EMSCRIPTEN_KEEPALIVE uint32_t web_audio_ring_create(uint32_t rate) {
   header[4] = (uint32_t)(uintptr_t)g_ring.data;
   return (uint32_t)(uintptr_t)header;
 }
+
+// The game's client size as width << 16 | height, for mapping pointer positions.
+EMSCRIPTEN_KEEPALIVE int web_client_size() { return plat::g_client_w << 16 | plat::g_client_h; }
 
 EMSCRIPTEN_KEEPALIVE void web_canvas_size(int w, int h) {
   plat::g_canvas_w = w;

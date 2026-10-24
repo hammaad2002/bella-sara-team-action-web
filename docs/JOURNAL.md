@@ -213,3 +213,57 @@ Plan and milestone exit criteria: `docs/PLAN.md`.
   ~13 fps, later frames 6 draws / 1,320 primitives. Conformance still 45,840 runs / 0 failing; `tsc` clean.
 - Known wrong: the frame is a flat red block in the top-left (game back buffer 800×600 vs 1920×1200 output not scaled;
   textures not sampled yet). That is the next wave (graphics correctness).
+
+## 2026-10-23/24 — Fidelity wave: input, resolution, bloom, memory (reviewer + Sonnet subagents)
+- Method: reached real gameplay (farm tutorial → stables → Magical Orchard riding) natively with scripted input
+  and in headless Chrome through an interactive driver (`work/tools/driver.mjs`, closed-loop clicking via the
+  game's own cursor sprite), and compared against 35 captures of the original PC game (`work/ref-shots/`).
+- **Mouse buttons never worked.** The game polls its exclusive DirectInput mouse and calls `Acquire` only after
+  `Poll` fails (0x682080); our `Poll` returned `DI_OK` for unacquired keyboard/mouse. Now `DIERR_NOTACQUIRED` /
+  `DI_NOEFFECT` as on Windows; motion made while unacquired is dropped on `Acquire`; `SetCursorPos` no longer
+  injects relative motion. user32 now sends the activation sequence (`WM_ACTIVATEAPP`, `WM_NCACTIVATE`,
+  `WM_ACTIVATE`, `WM_SETFOCUS`) on first show and `WM_NCACTIVATE` on focus changes (the game's input-active flag,
+  0x73A46C). The cursor is velocity-driven (DInput deltas × 30, clamped) like the original, so the web shell now
+  captures the pointer on the first click (`mouseCapture: true`) and integrates motion under lock.
+- Headless runs ignore SDL focus loss (scripted input was randomly dropped).
+- **Resolution.** The game's own options file `Bella Sara/settings.dat` (XML: `VM_WIDTH/HEIGHT`,
+  `VM_MULTISAMPLELEVEL`, `ADV_*`) chooses the mode. The executor clamped the back buffer to the 800×600 window, so
+  any other mode rendered a cropped corner. Now the back buffer is the game's size, a fullscreen device sizes the
+  HLE window (client coords = resolution) and the page maps the pointer into it (letterbox-aware,
+  `web_client_size`). The present blit is LINEAR again (NEAREST at 1.6× gave uneven pixels).
+- **Web Graphics panel** replaces the Shrek registry settings: resolution (default "match screen"), Low/Medium/High
+  presets over the `ADV_*` options, advanced toggles; written into OPFS `bella/Bella Sara/settings.dat` before
+  launch. Save backups now use `bella/Bella Sara/` (where the game actually writes).
+- **Bloom** (`ADV_FULLSCREENBLOOM`) segfaulted at boot: RT-texture uploads took the 16-bit repack path; then the
+  `CopyRects` back-buffer copy read empty CPU memory. RT uploads use the RGBA8 path and GPU→GPU `CopyRects` emits
+  `OpStretchRect`.
+- **Out-of-memory fatal** ("arnStructure_BridgeMalloc … out of memory", after tutorial + Orchard in one process):
+  D3D8 textures, vertex/index buffers and surfaces never freed their guest memory or GL objects. Destructors now
+  free both; the device holds references on bound textures/streams/indices; `GetTexture`/`GetIndices` AddRef.
+  Heap now rises and falls with level loads (164–240 MB of 654 MB) instead of only climbing. The "Total memory
+  commited" figure on that screen is just `dwTotalPhys - dwAvailPhys` from `GlobalMemoryStatus`.
+- **Shader/sampler correctness:** ps_1.x destination shift modifiers (`_x2/_x4/_x8/_d2/_d4/_d8`) were ignored;
+  D3D8 texture-stage sampler indices were wrong (MIN/MAG swapped, `ADDRESSW` read `BORDERCOLOR`, anisotropy and
+  max mip level taken from D3D9 sampler state, so `ADV_TEXTUREFILTERMODE 2` got 1× anisotropy).
+- Debug tooling: `BELLA_CAPTURE=<frame>` (per-draw state, layout, raw vertices, sampled textures as PAM),
+  `BELLA_SKIP=a-b`, `BELLA_TRACE=shaders` logs generated GLSL, `BELLA_TRACE=mem`. Per-call d3d8/dinput debug logs
+  from the previous commits are now behind trace switches.
+- Checked and **not** bugs: the white flash on menu transitions is the game's fade; streaked flowers on steep
+  hillsides are planar terrain mapping; Excelsior's pink sheen is the original effect; alpha-tested foliage drawn
+  with blend ONE/ZERO is how the game renders cut-outs.
+- **Anti-aliasing.** The game picks `min(VM_MULTISAMPLELEVEL, highest type CheckDeviceMultiSampleType accepts)` and
+  passes it as D3D8 present-parameter dword 4 (`MultiSampleType`; dword 3 is `BackBufferCount`). `OpBackBuffer` now
+  carries the sample count; the executor renders the back buffer into a multisampled renderbuffer (+ matching
+  multisampled depth twin) and resolves into the back-buffer texture only when needed (present, dumps, readback,
+  StretchRect source such as the bloom copy). Falls back to single-sample on any GL error / incomplete FBO. Level 1 is
+  the old path.
+- Web tests: `tools/web-settings-test.mjs` covers the new Graphics panel; the Shrek registry/rebinding checks were
+  removed from `tools/web-ui-test.mjs` (help section) and `tools/web-pad-test.mjs` (settings section). The dev
+  server's `/dev-iso` also accepts `Bella_Sara.iso`.
+- **WebKit stalled at frame 22, Chrome lost ~40 s at load.** `ReadFile` went through `fopen`/`fread` with tiny stdio
+  buffers; in the web build each refill is a WasmFS OPFS blob read proxied through the page thread (~6 M HLE file
+  calls while loading the localisation and asset files). Read-only handles now use an HLE read cache (files ≤ 4 MiB
+  loaded whole, otherwise a 1 MiB window): host reads on the Orchard route 275,496 → 855; WebKit now runs at
+  ~30 fps and Chrome reaches the title in seconds.
+- Runtime self-tests link in the no-game build again (`runtime/tests/plat_stubs.cpp`); `tools/build-release.sh`
+  and `tools/web-release-test.mjs` accept `Bella_Sara.iso`.

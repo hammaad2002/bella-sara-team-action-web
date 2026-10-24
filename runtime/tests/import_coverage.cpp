@@ -28,18 +28,6 @@ void hle_link_advapi32();
 void hle_link_dinput8();
 void hle_link_fmod();
 
-namespace plat {
-
-void create_window(const std::string&, int, int) {}
-void get_display_size(int* width, int* height) { *width = 640, *height = 480; }
-void show_cursor(bool) {}
-void poll_events(std::vector<InputEvent>&) {}
-const uint8_t* keyboard_state() { static const uint8_t keys[256] = {}; return keys; }
-MouseState take_mouse_state() { return {}; }
-GamepadState gamepad_state(int) { return {}; }
-void gamepad_rumble(int, float, float) {}
-
-}  // namespace plat
 
 // The static runtime library expects the recompiled function table (normally emitted by the
 // translator's C backend) and the dlmalloc mspace entry points (normally the `dlmalloc` target).
@@ -55,6 +43,7 @@ void* mspace_malloc(mspace, size_t) { return nullptr; }
 void* mspace_calloc(mspace, size_t, size_t) { return nullptr; }
 void* mspace_realloc(mspace, void*, size_t) { return nullptr; }
 void mspace_free(mspace, void*) {}
+void mspace_mallinfo(mspace) {}  // stats only (rt::mem_log_stats); never called in tests
 }
 
 int main(int argc, char** argv) {

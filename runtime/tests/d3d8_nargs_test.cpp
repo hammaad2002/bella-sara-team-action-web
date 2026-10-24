@@ -13,6 +13,7 @@ void* mspace_malloc(mspace, size_t) { return nullptr; }
 void* mspace_calloc(mspace, size_t, size_t) { return nullptr; }
 void* mspace_realloc(mspace, void*, size_t) { return nullptr; }
 void mspace_free(mspace, void*) {}
+void mspace_mallinfo(mspace) {}  // stats only (rt::mem_log_stats); never called in tests
 }
 
 int main() {

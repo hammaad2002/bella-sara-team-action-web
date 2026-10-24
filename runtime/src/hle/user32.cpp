@@ -38,7 +38,7 @@ enum : uint32_t {
   WM_NULL = 0x0000, WM_CREATE = 0x0001, WM_DESTROY = 0x0002, WM_MOVE = 0x0003, WM_SIZE = 0x0005, WM_ACTIVATE = 0x0006,
   WM_SETFOCUS = 0x0007, WM_KILLFOCUS = 0x0008, WM_CLOSE = 0x0010, WM_QUIT = 0x0012, WM_SHOWWINDOW = 0x0018,
   WM_ACTIVATEAPP = 0x001c, WM_GETMINMAXINFO = 0x0024, WM_WINDOWPOSCHANGING = 0x0046, WM_WINDOWPOSCHANGED = 0x0047,
-  WM_DISPLAYCHANGE = 0x007e, WM_NCCREATE = 0x0081, WM_NCCALCSIZE = 0x0083, WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101,
+  WM_DISPLAYCHANGE = 0x007e, WM_NCCREATE = 0x0081, WM_NCCALCSIZE = 0x0083, WM_NCACTIVATE = 0x0086, WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101,
   WM_CHAR = 0x0102, WM_SYSKEYDOWN = 0x0104, WM_SYSKEYUP = 0x0105, WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201,
   WM_LBUTTONUP = 0x0202, WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205, WM_MBUTTONDOWN = 0x0207, WM_MBUTTONUP = 0x0208,
   WM_MOUSEWHEEL = 0x020a,
@@ -130,6 +130,16 @@ void init_minmaxinfo(uint32_t mmi) {
 }
 
 // Synchronous WM_WINDOWPOS* + WM_SIZE/WM_MOVE (and optional WM_SHOWWINDOW) like user32 SetWindowPos.
+// Showing a top-level window activates it. The game sets its "input active" flag on
+// WM_NCACTIVATE (f_00682010) and only re-acquires its exclusive DirectInput mouse while that flag
+// is set, so without this sequence mouse buttons never reach it.
+void activate(Cpu* c) {
+  send(c, WM_ACTIVATEAPP, 1, 0);
+  send(c, WM_NCACTIVATE, 1, 0);
+  send(c, WM_ACTIVATE, 1, 0);
+  send(c, WM_SETFOCUS, 0, 0);
+}
+
 void apply_window_pos(Cpu* c, int x, int y, int cx, int cy, uint32_t flags) {
   if (!g_hwnd) return;
   const bool move = !(flags & SWP_NOMOVE);
@@ -160,6 +170,7 @@ void apply_window_pos(Cpu* c, int x, int y, int cx, int cy, uint32_t flags) {
   if (show && !g_window_visible) {
     g_window_visible = true;
     send(c, WM_SHOWWINDOW, 1, 0);
+    activate(c);
   }
   if (hide && g_window_visible) {
     g_window_visible = false;
@@ -212,10 +223,12 @@ void pump() {
       case plat::InputEvent::FocusGained:
         d3d::set_app_active(true);
         post(WM_ACTIVATEAPP, 1, 0);
+        post(WM_NCACTIVATE, 1, 0);
         post(WM_ACTIVATE, 1, 0);
         break;
       case plat::InputEvent::FocusLost:
         d3d::set_app_active(false);
+        post(WM_NCACTIVATE, 0, 0);
         post(WM_ACTIVATE, 0, 0);
         post(WM_ACTIVATEAPP, 0, 0);
         break;
@@ -229,6 +242,16 @@ void pump() {
 
 namespace rt {
 void user32_pump() { pump(); }
+// A fullscreen D3D device covers the screen at its display mode: the window's client area (and so
+// GetClientRect and mouse coordinates) becomes the back-buffer size.
+void user32_fullscreen_size(int w, int h) {
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_width = w;
+    g_height = h;
+  }
+  plat::set_window_size(w, h);
+}
 }  // namespace rt
 
 namespace {
@@ -292,6 +315,7 @@ HLE_STDCALL(kDll, CreateWindowExA, 12) {
   g_window_visible = visible_at_create;
   if (visible_at_create) {
     send(c, WM_SHOWWINDOW, 1, 0);
+    activate(c);
     send(c, WM_SIZE, 0, make_size_lparam());
     send(c, WM_MOVE, 0, (uint32_t)g_win_y << 16 | (uint32_t)(g_win_x & 0xffff));
     g_size_sent = true;

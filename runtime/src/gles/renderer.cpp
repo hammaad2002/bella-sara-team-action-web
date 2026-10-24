@@ -175,7 +175,7 @@ Program build_program(const ProgKey& k) {
   p.ok = true;
   p.vs = vs;
   p.fs = fs;
-  if (rt::trace_enabled("shaders")) rt::log(rt::Log::Debug, "GL: new program\n--- vs ---\n%s--- fs ---\n%s", vs.c_str(), fs.c_str());
+  if (rt::trace_enabled("shaders")) rt::log(rt::Log::Info, "GL: new program vs %u ps %u\n--- vs ---\n%s--- fs ---\n%s", k.vs_id, k.ps_id, vs.c_str(), fs.c_str());
   return p;
 }
 
@@ -698,16 +698,18 @@ GLenum gl_address(uint32_t a) {
 GLuint sampler_for_texture_stage(uint32_t stage, bool mipmapped) {
   const auto& ss = g.st.ss[stage];
   const auto& ts = g.st.tss[stage];
-  // D3D8 has no SetSamplerState; address/filter live in texture stage state (D3DTSS_*).
-  // Prefer stage-state address/filter (D3D8); fall back to D3D9-style sampler state.
+  // D3D8 has no SetSamplerState; address/filter live in texture stage state (D3DTSS_ADDRESSU 13,
+  // ADDRESSV 14, MAGFILTER 16, MINFILTER 17, MIPFILTER 18, MAXMIPLEVEL 20, MAXANISOTROPY 21,
+  // ADDRESSW 25). Prefer those; fall back to D3D9-style sampler state.
   uint32_t wrap_u = ts[13] ? ts[13] : (ss[1] ? ss[1] : 1u);
   uint32_t wrap_v = ts[14] ? ts[14] : (ss[2] ? ss[2] : 1u);
-  uint32_t wrap_w = ts[15] ? ts[15] : (ss[3] ? ss[3] : 1u);
-  uint32_t mag = ts[17] ? ts[17] : (ss[5] ? ss[5] : 2u);
-  uint32_t min = ts[16] ? ts[16] : (ss[6] ? ss[6] : 2u);
+  uint32_t wrap_w = ts[25] ? ts[25] : (ss[3] ? ss[3] : 1u);
+  uint32_t mag = ts[16] ? ts[16] : (ss[5] ? ss[5] : 2u);
+  uint32_t min = ts[17] ? ts[17] : (ss[6] ? ss[6] : 2u);
   uint32_t mip = mipmapped ? (ts[18] ? ts[18] : ss[7]) : 0;
+  uint32_t max_level = ts[20] ? ts[20] : ss[9], max_aniso = ts[21] ? ts[21] : ss[10];
   uint64_t key = (uint64_t)wrap_u | (uint64_t)wrap_v << 4 | (uint64_t)wrap_w << 8 | (uint64_t)mag << 12 | (uint64_t)min << 16 |
-                 (uint64_t)mip << 20 | (uint64_t)std::min<uint32_t>(ss[9], 15) << 24 | (uint64_t)std::min<uint32_t>(ss[10], 16) << 28;
+                 (uint64_t)mip << 20 | (uint64_t)std::min<uint32_t>(max_level, 15) << 24 | (uint64_t)std::min<uint32_t>(max_aniso, 16) << 28;
   auto it = g_samplers.find(key);
   if (it != g_samplers.end()) return it->second;
   GLuint s;
@@ -722,8 +724,8 @@ GLuint sampler_for_texture_stage(uint32_t stage, bool mipmapped) {
   else if (mip == 1) mf = min_lin ? GL_LINEAR_MIPMAP_NEAREST : GL_NEAREST_MIPMAP_NEAREST;
   else mf = min_lin ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR;
   glSamplerParameteri(s, GL_TEXTURE_MIN_FILTER, (GLint)mf);
-  glSamplerParameterf(s, GL_TEXTURE_MIN_LOD, (float)ss[9]);
-  if (min == 3 || mag == 3) glSamplerParameterf(s, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY_EXT */, (float)std::max<uint32_t>(ss[10], 1));
+  glSamplerParameterf(s, GL_TEXTURE_MIN_LOD, (float)std::min<uint32_t>(max_level, 15));
+  if (min == 3 || mag == 3) glSamplerParameterf(s, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY_EXT */, (float)std::clamp<uint32_t>(max_aniso, 1, 16));
   g_samplers[key] = s;
   return s;
 }
@@ -758,6 +760,51 @@ void draw(uint32_t prim, uint32_t start, uint32_t count, bool indexed, int32_t b
     g.skipped_draws++;
     return;
   }
+  // Debugging one frame (1-based presented-frame number): BELLA_CAPTURE=N logs each draw's state,
+  // BELLA_SKIP=a-b drops that frame's draws a..b (0-based) to see what they paint.
+  static const uint64_t cap_frame = getenv("BELLA_CAPTURE") ? strtoull(getenv("BELLA_CAPTURE"), nullptr, 10) : 0;
+  const uint32_t di = g.frame_draws++;
+  const bool capturing = cap_frame && g.frames + 1 == cap_frame;
+  if (capturing) {
+    static uint32_t skip_a = ~0u, skip_b = 0;
+    if (const char* e = getenv("BELLA_SKIP"); e && skip_a == ~0u) skip_a = (uint32_t)atoi(e), skip_b = strchr(e, '-') ? (uint32_t)atoi(strchr(e, '-') + 1) : skip_a;
+    const auto& rs = g.st.rs;
+    std::string t;
+    for (int s = 0; s < 4; s++) {
+      auto ti = g.textures[s] ? g.tex.find(g.textures[s]) : g.tex.end();
+      char b[160];
+      const auto& ts = g.st.tss[s];
+      snprintf(b, sizeof b, " | t%d=%u(%ux%u f%u) c%u(%u,%u) a%u(%u,%u) tci%x ttf%x", s, g.textures[s], ti != g.tex.end() ? ti->second.w : 0,
+               ti != g.tex.end() ? ti->second.h : 0, ti != g.tex.end() ? ti->second.fmt : 0, ts[1], ts[2], ts[3], ts[4], ts[5], ts[6], ts[11], ts[24]);
+      t += b;
+      if (ts[1] == 1 && !key.ps_id) break;
+    }
+    rt::log(rt::Log::Info, "cap %u prim %u n %u vs %u/%u ps %u z%u/%u/%u ab%u %u/%u op%u at%u/%u/%u cull%u fog%u tf%08x lay%zu%s%s", di, prim, nverts, key.vs_kind,
+            g.vs, g.ps, rs[7], rs[14], rs[23], rs[27], rs[19], rs[20], rs[171], rs[15], rs[24], rs[25], rs[22], rs[28], rs[60], g.layout.size(), t.c_str(),
+            di >= skip_a && di <= skip_b ? " SKIPPED" : "");
+    // Each uncompressed texture the frame samples, once, as <dump dir>/tex_<id>.pam (RGBA, level 0).
+    static std::unordered_map<uint32_t, bool> dumped;
+    for (int s = 0; s < 4 && getenv("BELLA_DUMP_DIR"); s++) {
+      auto ti = g.textures[s] ? g.tex.find(g.textures[s]) : g.tex.end();
+      if (ti == g.tex.end() || ti->second.gfmt.compressed || ti->second.target != GL_TEXTURE_2D || dumped[g.textures[s]]) continue;
+      dumped[g.textures[s]] = true;
+      const Tex& tx = ti->second;
+      std::vector<uint8_t> px((size_t)tx.w * tx.h * 4);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_for(Target{2, g.textures[s], 0, 0}, Target{}));
+      glPixelStorei(GL_PACK_ALIGNMENT, 1);
+      glReadPixels(0, 0, (GLsizei)tx.w, (GLsizei)tx.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+      char path[512];
+      snprintf(path, sizeof path, "%s/tex_%u.pam", getenv("BELLA_DUMP_DIR"), g.textures[s]);
+      if (FILE* f = fopen(path, "wb")) {
+        fprintf(f, "P7\nWIDTH %u\nHEIGHT %u\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n", tx.w, tx.h);
+        fwrite(px.data(), 1, px.size(), f);
+        fclose(f);
+      }
+      bind_render_target();
+      gs = GlState{};
+    }
+    if (di >= skip_a && di <= skip_b) return;
+  }
   apply_state(key.vs_kind == 1);
   if (gs.program != p.prog) {
     gs.program = p.prog;
@@ -767,7 +814,7 @@ void draw(uint32_t prim, uint32_t start, uint32_t count, bool indexed, int32_t b
   bind_textures(key);
   glBindVertexArray(g_vao);
   bool up = up_vdata != nullptr;
-  if (rt::trace_enabled("draws") || rt::trace_enabled("debug")) {
+  if (rt::trace_enabled("draws") || rt::trace_enabled("debug") || capturing) {
     rt::log(rt::Log::Info, "draw prim %u count %u start %u indexed %d base %d up %d stride %u layout %zu tex0 %u vs_kind %u blend %u rs151 %u vs %u ps %u",
             prim, count, start, indexed, base_vertex, up, up_stride, g.layout.size(), g.textures[0],
             key.vs_kind, key.blend, g.st.rs[151], g.vs, g.ps);
@@ -782,14 +829,22 @@ void draw(uint32_t prim, uint32_t start, uint32_t count, bool indexed, int32_t b
       const StreamBinding& sb = g.streams[0];
       auto it = g.bufs.find(sb.id);
       if (it != g.bufs.end() && sb.stride >= 24) {
-        size_t off = (size_t)sb.offset + (size_t)start * sb.stride;
-        for (uint32_t vi = 0; vi < std::min<uint32_t>(count + 2, 4); vi++) {
+        // Indexed draws address vertices from base_vertex + min_index; raw dwords, any layout.
+        size_t first = indexed ? (size_t)(base_vertex + (int32_t)min_index) : start;
+        size_t off = (size_t)sb.offset + first * sb.stride;
+        for (uint32_t vi = 0; vi < 10; vi++) {
           size_t voff = off + (size_t)vi * sb.stride;
-          if (voff + sb.stride <= it->second.shadow.size()) {
-            const float* f = (const float*)(it->second.shadow.data() + voff);
-            const uint32_t* u = (const uint32_t*)(it->second.shadow.data() + voff);
-            rt::log(rt::Log::Info, "  v%u buf: pos=(%g %g %g %g) col=%08x uv=(%g %g)", vi, f[0], f[1], f[2], f[3], u[4], f[5], f[6]);
+          if (voff + sb.stride > it->second.shadow.size()) break;
+          const float* f = (const float*)(it->second.shadow.data() + voff);
+          const uint32_t* u = (const uint32_t*)(it->second.shadow.data() + voff);
+          std::string row;
+          char b[48];
+          for (uint32_t w = 0; w < std::min<uint32_t>(sb.stride / 4, 12); w++) {
+            if (std::fabs(f[w]) < 1e7f && (u[w] & 0x7f800000)) snprintf(b, sizeof b, " %g", f[w]);
+            else snprintf(b, sizeof b, " %08x", u[w]);
+            row += b;
           }
+          rt::log(rt::Log::Info, "  v%u stride %u:%s", vi, sb.stride, row.c_str());
         }
       }
     }

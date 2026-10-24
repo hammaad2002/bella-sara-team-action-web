@@ -32,6 +32,8 @@ struct Tex {
 struct Rb {
   GLuint gl = 0;
   uint32_t w = 0, h = 0, fmt = 0;
+  GLuint ms = 0;  // multisampled twin, created on first use with an MSAA back buffer
+  uint32_t ms_samples = 0;
 };
 
 struct Buf {
@@ -69,6 +71,9 @@ struct Exec {
   std::array<Target, 4> rt{};
   Target ds;
   GLuint bb_tex = 0;
+  uint32_t bb_samples = 0;     // MSAA sample count of the back buffer (0 = single-sampled)
+  GLuint bb_ms_rb = 0, bb_res_fbo = 0;
+  bool bb_dirty = false;       // MSAA color written since the last resolve into bb_tex
   uint32_t bbw = 0, bbh = 0, bb_fmt = 22;
   std::map<uint64_t, GLuint> fbos;
   GLuint scratch_tex = 0, scratch_fbo = 0;  // for blits within one surface
@@ -77,6 +82,7 @@ struct Exec {
   uint16_t gamma[3 * 256] = {};
   // Statistics.
   uint64_t frames = 0, draws = 0, skipped_draws = 0;
+  uint32_t frame_draws = 0;  // draws since the last present (BELLA_CAPTURE / BELLA_SKIP index)
 };
 
 extern Exec g;
@@ -84,6 +90,8 @@ extern Exec g;
 GlFormat gl_format(uint32_t fmt);
 std::vector<uint8_t> to_rgba8(uint32_t fmt, const uint8_t* src, uint32_t w, uint32_t h, uint32_t pitch);
 GLuint fbo_for(const Target& color, const Target& depth);
+// FBO holding the resolved back buffer image, safe to read/blit from (resolves MSAA first).
+GLuint bb_read_fbo();
 void target_size(const Target& t, uint32_t* w, uint32_t* h);
 void bind_render_target();
 

@@ -19,6 +19,8 @@ void* mspace_malloc(mspace msp, size_t bytes);
 void* mspace_calloc(mspace msp, size_t n, size_t elem_size);
 void* mspace_realloc(mspace msp, void* mem, size_t newsize);
 void mspace_free(mspace msp, void* mem);
+struct mallinfo { size_t arena, ordblks, smblks, hblks, hblkhd, usmblks, fsmblks, uordblks, fordblks, keepcost; };
+struct mallinfo mspace_mallinfo(mspace msp);
 }
 
 namespace rt {
@@ -203,6 +205,25 @@ uint32_t heap_create(uint32_t, uint32_t) {
 }
 
 bool heap_destroy(uint32_t) { return true; }
+
+// Diagnostics for rt::trace_enabled("mem"): dlmalloc heap occupancy and VirtualAlloc totals.
+void mem_log_stats() {
+  if (!g_mspace) return;
+  struct mallinfo mi = mspace_mallinfo(g_mspace);
+  uint64_t reserved = 0, committed = 0;
+  size_t nres;
+  {
+    std::lock_guard<std::mutex> lock(g_mem_mutex);
+    nres = g_reservations.size();
+    for (auto& [base, r] : g_reservations) {
+      reserved += r.size;
+      for (bool c : r.committed) committed += c ? kPage : 0;
+    }
+  }
+  log(Log::Info, "mem: heap used %zu KB, free %zu KB (arena %zu KB of %u KB); vm %zu regions, reserved %llu KB, committed %llu KB",
+      mi.uordblks >> 10, mi.fordblks >> 10, mi.arena >> 10, (kHeapEnd - kHeapBase) >> 10, nres,
+      (unsigned long long)(reserved >> 10), (unsigned long long)(committed >> 10));
+}
 
 uint32_t process_heap() {
   if (!g_process_heap) g_process_heap = heap_create(0, 0);

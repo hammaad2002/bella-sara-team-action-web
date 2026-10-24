@@ -24,6 +24,7 @@ namespace {
 
 // D3D8 D3DPRESENT_PARAMETERS (52 bytes, 13 dwords) — no MultiSampleQuality field (unlike D3D9).
 enum : int {
+  kPP8_MultiSampleType = 4,
   kPP8_Windowed = 7,
   kPP8_EnableAutoDepthStencil = 8,
   kPP8_AutoDepthStencilFormat = 9,
@@ -282,6 +283,15 @@ void set_indices(Device8* d, uint32_t guest_ib) {
   rec().op(cmd::OpSetIndices, {d->index_gl, d->index_fmt == d3d::FMT_INDEX32 ? 32u : 16u});
 }
 
+// Like D3D8, the device holds a reference on whatever is bound to it, so a bound resource survives
+// the game's Release (resources free their memory and GL objects when the count reaches zero).
+static void swap_bound_ref(uint32_t* slot, uint32_t ptr) {
+  uint32_t old = *slot;
+  if (ComObject* o = ptr ? com_object(ptr) : nullptr) o->refs++;
+  *slot = ptr;
+  if (ComObject* o = old ? com_object(old) : nullptr) com_Release(nullptr, o);
+}
+
 void set_texture8(Device8* d, uint32_t stage, uint32_t ptr) {
   if (ptr) {
     if (auto* tex = dynamic_cast<Texture8*>(com_object(ptr))) texture_flush_dirty(tex);
@@ -289,7 +299,7 @@ void set_texture8(Device8* d, uint32_t stage, uint32_t ptr) {
   uint32_t id = ptr ? guest_texture_gl(ptr) : 0;
   if (stage < 8) {
     d->bound_tex[stage] = id;
-    d->bound_tex_guest[stage] = ptr;
+    swap_bound_ref(&d->bound_tex_guest[stage], ptr);
   }
   rec().op(cmd::OpSetTexture, {stage, id});
 }
@@ -297,14 +307,14 @@ void set_texture8(Device8* d, uint32_t stage, uint32_t ptr) {
 void set_stream8(Device8* d, uint32_t i, uint32_t ptr, uint32_t stride) {
   if (i >= 16) return;
   d->streams[i].gl_buf = ptr ? guest_vertex_buffer_gl(ptr) : 0;
-  d->streams[i].guest_vb = ptr;
+  swap_bound_ref(&d->streams[i].guest_vb, ptr);
   d->streams[i].offset = 0;
   d->streams[i].stride = stride;
   rec().op(cmd::OpSetStream, {i, d->streams[i].gl_buf, 0u, stride});
 }
 
 void set_indices8(Device8* d, uint32_t ptr, uint32_t base) {
-  d->index_guest = ptr;
+  swap_bound_ref(&d->index_guest, ptr);
   d->index_base = base;
   set_indices(d, ptr);
 }
@@ -495,6 +505,7 @@ d3d::Viewport read_vp(uint32_t p) {
 
 void recorder_create_device8(Device8* dev) {
   dev->lost = false;
+  log(Log::Info, "D3D8 back buffer %ux%u MultiSampleType=%u", dev->pp[0], dev->pp[1], dev->pp[kPP8_MultiSampleType]);
   g_stream.op(cmd::OpResetState, {});
   d3d::init_default_state(dev->st);
   dev->st.rs[7] = dev->pp[kPP8_EnableAutoDepthStencil] ? 1 : 0;
@@ -523,8 +534,9 @@ void recorder_create_device8(Device8* dev) {
     dev->depth_stencil = ds;
     com_wrap(ds, iface_d3d8_surface());
   }
+  if (!dev->pp[kPP8_Windowed] && dev->pp[0] && dev->pp[1]) rt::user32_fullscreen_size((int)dev->pp[0], (int)dev->pp[1]);
   g_stream.op(cmd::OpBackBuffer,
-              {dev->pp[0], dev->pp[1], dev->pp[kPP8_Windowed] ? 1u : 0u, dev->pp[2]});
+              {dev->pp[0], dev->pp[1], dev->pp[kPP8_Windowed] ? 1u : 0u, dev->pp[2], dev->pp[kPP8_MultiSampleType]});
   g_stream.op(cmd::OpSetRenderTarget, {0, 1, 0, 0, 0});
   if (dev->depth_stencil)
     g_stream.op(cmd::OpSetDepthStencil, {3u, dev->depth_stencil->gl_rb});
@@ -821,7 +833,7 @@ uint32_t SetVertexShader(Cpu* c, ComObject* self) {
     d->vs_handle = token;
     d->fvf = 0;
     d->st.fvf = 0;
-    log(Log::Info, "d3d8: SetVertexShader handle=%08x vs_id=%u elts=%zu caller=%08x", token, s->program_id, s->elements.size(), caller);
+    if (trace_enabled("shaders")) log(Log::Info, "d3d8: SetVertexShader handle=%08x vs_id=%u elts=%zu caller=%08x", token, s->program_id, s->elements.size(), caller);
     emit_shaders(d);
     emit_layout(s->elements);
     return S_OK;
@@ -843,7 +855,7 @@ uint32_t SetPixelShader(Cpu* c, ComObject* self) {
   Device8* d = D(self);
   uint32_t handle = arg(c, 1);
   if (recording8(d, {RK8_PS, handle, 0, {}})) return S_OK;
-  log(Log::Info, "d3d8: SetPixelShader handle=%08x", handle);
+  if (trace_enabled("shaders")) log(Log::Info, "d3d8: SetPixelShader handle=%08x", handle);
   d->ps_handle = handle;
   emit_shaders(d);
   return S_OK;
@@ -859,7 +871,7 @@ uint32_t GetPixelShader(Cpu* c, ComObject* self) {
 uint32_t SetVertexShaderConstant(Cpu* c, ComObject* self) {
   Device8* d = D(self);
   uint32_t start = arg(c, 1), count = arg(c, 3);
-  if (start >= 12) log(Log::Info, "d3d8: SetVertexShaderConstant start=%u count=%u", start, count);
+  if (start >= 12 && trace_enabled("shaders")) log(Log::Info, "d3d8: SetVertexShaderConstant start=%u count=%u", start, count);
   if (d->recording) {
     RecOp8 op{RK8_VSC, start, count, {}};
     op.data.resize(count * 4);
@@ -1092,7 +1104,9 @@ uint32_t GetClipStatus(Cpu* c, ComObject*) {
 
 uint32_t GetTexture(Cpu* c, ComObject* self) {
   uint32_t stage = arg(c, 1);
-  st32(arg(c, 2), stage < 8 ? D(self)->bound_tex_guest[stage] : 0);
+  uint32_t tex = stage < 8 ? D(self)->bound_tex_guest[stage] : 0;
+  if (ComObject* o = tex ? com_object(tex) : nullptr) o->refs++;
+  st32(arg(c, 2), tex);
   return S_OK;
 }
 
@@ -1137,7 +1151,10 @@ uint32_t SetIndices(Cpu* c, ComObject* self) {
 
 uint32_t GetIndices(Cpu* c, ComObject* self) {
   Device8* d = D(self);
-  if (arg(c, 1) >= kNullGuardEnd) st32(arg(c, 1), d->index_guest);
+  if (arg(c, 1) >= kNullGuardEnd) {
+    if (ComObject* o = d->index_guest ? com_object(d->index_guest) : nullptr) o->refs++;
+    st32(arg(c, 1), d->index_guest);
+  }
   if (arg(c, 2) >= kNullGuardEnd) st32(arg(c, 2), d->index_base);
   return S_OK;
 }
@@ -1199,13 +1216,47 @@ uint32_t CreateImageSurface(Cpu* c, ComObject* self) {
   return S_OK;
 }
 
-uint32_t CopyRects(Cpu* c, ComObject*) {
+// GPU-resident surface (back buffer, RT texture level, RT surface) -> executor Target {kind,id,face,level}.
+static bool gpu_target(Device8* d, ComObject* o, uint32_t t[4], bool need_rt) {
+  t[0] = t[1] = t[2] = t[3] = 0;
+  if (o == d->back_buffer) return t[0] = 1, true;
+  if (auto* s = dynamic_cast<Surface8*>(o)) {
+    if (s->gl_tex) return t[0] = 2, t[1] = s->gl_tex, true;
+    return false;
+  }
+  if (auto* ts = dynamic_cast<TextureLevelSurface8*>(o)) {
+    if (!ts->tex || !ts->tex->gl_tex || ts->level >= ts->tex->levels || (need_rt && !(ts->tex->usage & d3d::USAGE_RENDERTARGET))) return false;
+    t[0] = 2, t[1] = ts->tex->gl_tex, t[2] = ts->face, t[3] = ts->level;
+    return true;
+  }
+  return false;
+}
+
+uint32_t CopyRects(Cpu* c, ComObject* self) {
   ComObject* src_obj = com_object(arg(c, 1));
   uint32_t rects = arg(c, 2);
   (void)arg(c, 3);  // cRects (only first rect used when non-null)
   ComObject* dst_obj = com_object(arg(c, 4));
   uint32_t points = arg(c, 5);
   if (!src_obj || !dst_obj) return d3d::D3DERR_INVALIDCALL;
+  // Source lives on the GPU (e.g. bloom copies the back buffer into a texture): copy there, CPU memory is stale.
+  uint32_t gs[4], gd[4];
+  Device8* dev = D(self);
+  if (gpu_target(dev, src_obj, gs, true) && gpu_target(dev, dst_obj, gd, false)) {
+    uint32_t sw = 0, sh = 0;
+    if (gs[0] == 1) sw = dev->back_buffer->width, sh = dev->back_buffer->height;
+    else if (auto* ss = dynamic_cast<Surface8*>(src_obj)) sw = ss->width, sh = ss->height;
+    else {
+      auto* ts = static_cast<TextureLevelSurface8*>(src_obj);
+      auto& lv = ts->tex->level[ts->tex->slot_index(ts->face, ts->level)];
+      sw = lv.w, sh = lv.h;
+    }
+    uint32_t r[4] = {0, 0, sw, sh}, px = 0, py = 0;
+    if (rects) r[0] = ld32(rects), r[1] = ld32(rects + 4), r[2] = ld32(rects + 8), r[3] = ld32(rects + 12);
+    if (rects && points) px = ld32(points), py = ld32(points + 4);
+    rec().op(cmd::OpStretchRect, {gs[0], gs[1], gs[2], gs[3], r[0], r[1], r[2], r[3], gd[0], gd[1], gd[2], gd[3], px, py, px + r[2] - r[0], py + r[3] - r[1], 1u});
+    return S_OK;
+  }
   uint32_t sw = 0, sh = 0, sfmt = 0, spitch = 0, smem = 0;
   uint32_t dw = 0, dh = 0, dfmt = 0, dpitch = 0, dmem = 0;
   if (!resolve_surface_mem(src_obj, &sw, &sh, &sfmt, &spitch, &smem) ||
@@ -1327,7 +1378,7 @@ uint32_t CreateVertexShader(Cpu* c, ComObject*) {
   rec().op(cmd::OpCreateShader, {s->program_id, 0u, (uint32_t)s->tokens.size()});
   rec().bytes(s->tokens.data(), (uint32_t)s->tokens.size() * 4);
   uint32_t wrapped = wrap_shader8(s);
-  log(Log::Info, "d3d8: CreateVertexShader id=%u elts=%zu tokens=%zu wrapped=%08x caller=%08x",
+  if (trace_enabled("shaders")) log(Log::Info, "d3d8: CreateVertexShader id=%u elts=%zu tokens=%zu wrapped=%08x caller=%08x",
       s->program_id, s->elements.size(), s->tokens.size(), wrapped, ld32(c->esp));
   st32(out, wrapped);
   return S_OK;
@@ -1343,7 +1394,7 @@ uint32_t CreatePixelShader(Cpu* c, ComObject*) {
   rec().op(cmd::OpCreateShader, {s->program_id, 1u, (uint32_t)s->tokens.size()});
   rec().bytes(s->tokens.data(), (uint32_t)s->tokens.size() * 4);
   uint32_t wrapped = wrap_shader8(s);
-  log(Log::Info, "d3d8: CreatePixelShader id=%u tokens=%zu wrapped=%08x", s->program_id, s->tokens.size(), wrapped);
+  if (trace_enabled("shaders")) log(Log::Info, "d3d8: CreatePixelShader id=%u tokens=%zu wrapped=%08x", s->program_id, s->tokens.size(), wrapped);
   st32(out, wrapped);
   return S_OK;
 }
@@ -1403,6 +1454,7 @@ uint32_t Present(Cpu* c, ComObject* self) {
         d->prims, secs > 0 ? (double)(d->frame - f_last) / secs : 0.0);
     t_last = now;
     f_last = d->frame;
+    if (trace_enabled("mem")) mem_log_stats();
   }
   d->draws = d->prims = 0;
   flush_stream(true);
@@ -1729,9 +1781,7 @@ void apply_state_block8(StateBlock8* sb) {
 
   for (uint32_t stage = 0; stage < 8; stage++) {
     if (d->bound_tex[stage] != sb->bound_tex[stage] || d->bound_tex_guest[stage] != sb->bound_tex_guest[stage]) {
-      d->bound_tex[stage] = sb->bound_tex[stage];
-      d->bound_tex_guest[stage] = sb->bound_tex_guest[stage];
-      rec().op(cmd::OpSetTexture, {stage, d->bound_tex[stage]});
+      set_texture8(d, stage, sb->bound_tex_guest[stage]);
     }
   }
 
@@ -1739,16 +1789,19 @@ void apply_state_block8(StateBlock8* sb) {
     const auto& s = sb->streams[i];
     if (d->streams[i].gl_buf != s.gl_buf || d->streams[i].guest_vb != s.guest_vb ||
         d->streams[i].offset != s.offset || d->streams[i].stride != s.stride) {
-      d->streams[i] = s;
-      rec().op(cmd::OpSetStream, {i, s.gl_buf, s.offset, s.stride});
+      swap_bound_ref(&d->streams[i].guest_vb, s.guest_vb);
+      d->streams[i].gl_buf = s.guest_vb ? guest_vertex_buffer_gl(s.guest_vb) : 0;  // the snapshot may be stale
+      d->streams[i].offset = s.offset;
+      d->streams[i].stride = s.stride;
+      rec().op(cmd::OpSetStream, {i, d->streams[i].gl_buf, s.offset, s.stride});
     }
   }
 
   if (d->index_gl != sb->index_gl || d->index_fmt != sb->index_fmt ||
       d->index_guest != sb->index_guest || d->index_base != sb->index_base) {
-    d->index_gl = sb->index_gl;
+    swap_bound_ref(&d->index_guest, sb->index_guest);
+    d->index_gl = sb->index_guest ? guest_index_buffer_gl(sb->index_guest) : 0;
     d->index_fmt = sb->index_fmt;
-    d->index_guest = sb->index_guest;
     d->index_base = sb->index_base;
     rec().op(cmd::OpSetIndices, {d->index_gl, d->index_fmt == d3d::FMT_INDEX32 ? 32u : 16u});
   }
