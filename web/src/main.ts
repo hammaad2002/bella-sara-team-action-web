@@ -293,7 +293,11 @@ async function play() {
     outputChannelCount: [2],
     processorOptions: { buffer: engine.HEAPU8.buffer, header },
   });
-  node.connect(audio.destination);
+  // The game mixes quietly (music at 25 %, effects at 70 % of full scale, as the original does), far
+  // below what a browser tab usually plays: boost it, with a limiter so loud moments don't clip.
+  const boost = new GainNode(audio, { gain: 3 });
+  const limiter = new DynamicsCompressorNode(audio, { threshold: -3, knee: 0, ratio: 20, attack: 0.003, release: 0.25 });
+  node.connect(boost).connect(limiter).connect(audio.destination);
   dev.audio = audio;
   dev.audioNode = node;
 
