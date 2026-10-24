@@ -14,9 +14,9 @@ const opt = (name, dflt) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : dflt;
 };
-const seconds = Number(opt("seconds", "120"));
+const seconds = Number(opt("seconds", "480"));
 const minFrames = Number(opt("min-frames", "0"));
-const query = opt("query", "devIso&autoplay");
+const query = opt("query", "devIso&autoplay&capture=300,600");
 const capMatch = /(?:^|&)capture=([0-9,]+)/.exec(query);
 const expectedCaps = capMatch ? capMatch[1].split(",").filter(Boolean) : [];
 const port = opt("port", "5174");
@@ -63,15 +63,19 @@ let blurred = false, focused = false;
 let lastState = "";
 let lastStatus = "";
 let lastFrames = -1;
+let lastLogLen = 0;
 let saved = new Set();
 const deadline = Date.now() + seconds * 1000;
 while (Date.now() < deadline) {
   await page.waitForTimeout(2000);
-  const s = await page.evaluate(() => {
+  const s = await page.evaluate((from) => {
     const d = window.__bella;
-    if (!d) return { state: "loading", frames: 0, status: document.getElementById("status")?.textContent ?? "", logLen: 0, caps: [] };
-    return { state: d.state, frames: d.frames, status: document.getElementById("status")?.textContent ?? "", logLen: d.log?.length ?? 0, caps: Object.keys(d.captures ?? {}) };
-  });
+    if (!d) return { state: "loading", frames: 0, status: document.getElementById("status")?.textContent ?? "", logLen: 0, caps: [], newLogs: [] };
+    const newLogs = d.log ? d.log.slice(from) : [];
+    return { state: d.state, frames: d.frames, status: document.getElementById("status")?.textContent ?? "", logLen: d.log?.length ?? 0, caps: Object.keys(d.captures ?? {}), newLogs };
+  }, lastLogLen);
+  lastLogLen = s.logLen;
+  for (const l of s.newLogs) console.log(`${stamp()} engine: ${l}`);
   if (s.state === "running" && !runningSince) runningSince = Date.now();
   const ranFor = runningSince ? (Date.now() - runningSince) / 1000 : -1;
   if (blurAt >= 0 && !blurred && ranFor >= blurAt) {

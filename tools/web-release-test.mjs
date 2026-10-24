@@ -3,7 +3,7 @@
 // fresh browser profile, disc image chosen through the page's file picker, install, the controls
 // list on first Play, translation, and play to the main menu.
 //   node tools/web-release-test.mjs <url> [--iso Bella Sara.iso] [--saves backup.zip] [--browser chrome|firefox|webkit] [--frames 300]
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { browserArgs, launch } from "./browsers.mjs";
 
 const args = process.argv.slice(2);
@@ -16,7 +16,8 @@ if (!url || url.startsWith("--")) {
   console.error("usage: node tools/web-release-test.mjs <url> [--iso path] [--browser chrome|firefox|webkit]");
   process.exit(2);
 }
-const iso = opt("iso", "Bella Sara.iso");
+const defaultIso = process.env.BELLA_ISO ?? (existsSync("Bella Sara.iso") ? "Bella Sara.iso" : "Bella_Sara.iso");
+const iso = opt("iso", defaultIso);
 const want = Number(opt("frames", "300"));
 const saves = opt("saves", "");
 const { browser } = browserArgs(args);

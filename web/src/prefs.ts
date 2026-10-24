@@ -1,14 +1,16 @@
 /**
- * Browser-only preferences (the game's own settings live in its registry file). Kept in this
+ * Browser-only preferences (the game's own settings live in its settings.dat). Kept in this
  * site's localStorage; every access tolerates storage being unavailable.
  */
 export interface Prefs {
   /** KeyboardEvent.code that the game also receives as Escape. */
   pauseAlias: string;
+  /** Resolution follows the screen at every start (else settings.dat's VM_WIDTH/HEIGHT stay). */
+  autoResolution: boolean;
 }
 
 const KEY = "bella.prefs";
-export const DEFAULT_PREFS: Prefs = { pauseAlias: "Backquote" };
+export const DEFAULT_PREFS: Prefs = { pauseAlias: "Backquote", autoResolution: true };
 
 export function loadPrefs(): Prefs {
   try {

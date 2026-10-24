@@ -23,7 +23,11 @@ echo "ok"
 
 TOOLCHAIN="${BELLA_WEB_TOOLCHAIN:-$ROOT/../shrek2-team-action-web}"
 FFMPEG_WEB="${BELLA_FFMPEG_WEB:-$TOOLCHAIN/work/tools/ffmpeg-web}"
-ISO="${BELLA_ISO:-$ROOT/Bella Sara.iso}"
+DEFAULT_ISO="$ROOT/Bella_Sara.iso"
+if [ -f "$ROOT/Bella Sara.iso" ]; then
+  DEFAULT_ISO="$ROOT/Bella Sara.iso"
+fi
+ISO="${BELLA_ISO:-$DEFAULT_ISO}"
 
 echo "== shared bytes with the game"
 node "$ROOT/tools/scan-dist.mjs" "$DIST" "$ROOT/work/install" "$ISO" \

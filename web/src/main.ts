@@ -19,7 +19,7 @@ import { loadPrefs } from "./prefs.ts";
 import { Help } from "./help.ts";
 import { applyImport, exportSaves, listSaves, planImport, type ImportPlan } from "./saves.ts";
 import { SettingsPanel } from "./settings-ui.ts";
-import { keyLabel, prepareSettings } from "./settings.ts";
+import { GAME_SUBDIR, applyGraphics, keyLabel } from "./settings.ts";
 
 const params = new URLSearchParams(import.meta.env.DEV ? location.search : "");
 // The player engine contains no game code: the game is translated in this browser. `devEngine`
@@ -216,6 +216,7 @@ interface Engine {
   _web_mouse_button(button: number, down: number, x: number, y: number): void;
   _web_mouse_wheel(dy: number): void;
   _web_focus(focused: number): void;
+  _web_client_size(): number;
   _web_gamepad(slot: number, connected: number, buttons: number, lx: number, ly: number, rx: number, ry: number, lt: number, rt: number): void;
   _web_gamepad_rumble(): number;
   stringToNewUTF8(s: string): number;
@@ -226,14 +227,15 @@ interface Engine {
 
 async function resetSaves() {
   const opfs = await navigator.storage.getDirectory();
-  const save = await (await opfs.getDirectoryHandle(INSTALL_DIR)).getDirectoryHandle("Save", { create: true });
-  for await (const name of (save as unknown as { keys(): AsyncIterable<string> }).keys()) await save.removeEntry(name);
+  const dir = await (await opfs.getDirectoryHandle(INSTALL_DIR)).getDirectoryHandle(GAME_SUBDIR, { create: true });
+  await dir.removeEntry("EQSAVE.DAT").catch(() => {}); // only the player's save; settings.dat stays
 }
 
 async function play() {
   setState("starting", "Starting…");
   if (params.has("resetSave")) await resetSaves();
-  const settings = await prepareSettings();
+  // Creates settings.dat on the first start; with "match screen" the resolution follows this screen.
+  await applyGraphics(prefs.autoResolution ? "auto" : undefined);
   let game: Uint8Array | null = null;
   if (!DEV_ENGINE) {
     game = await cachedTranslation();
@@ -302,7 +304,7 @@ async function play() {
     engine._web_game_register(fptr, funcs.length);
   }
 
-  const input = new Input(engine, canvas, { pauseAlias: prefs.pauseAlias, mouseCapture: false });
+  const input = new Input(engine, canvas, { pauseAlias: prefs.pauseAlias, mouseCapture: true });
   // F1 or the HUD's Controls button: the controls list. The game is paused meanwhile (as when the
   // window loses focus) and gets no input.
   const toggleHelp = () => {
@@ -378,7 +380,7 @@ function attachHud(input: Input) {
     const fs = isFullscreen();
     button.textContent = fs ? "Exit fullscreen" : "Fullscreen";
     const tips = [];
-    if (input.options.mouseCapture && !input.pointerLocked) tips.push("Click the game to steer the camera with the mouse.");
+    if (input.options.mouseCapture && !input.pointerLocked) tips.push("Click the game to use the mouse.");
     if (fs && canLockEscape) tips.push("Hold Esc to leave fullscreen.");
     else if ((fs || input.pointerLocked) && code) tips.push(`Esc is taken by the browser here: press ${alias} for the game's Esc.`);
     hint.textContent = tips.join(" ");
@@ -414,7 +416,7 @@ async function refreshSaves() {
   const saves = await listSaves().catch(() => []);
   let hasSettings = false;
   try {
-    await (await gameDir()).getFileHandle("settings.dat");
+    await (await (await gameDir()).getDirectoryHandle(GAME_SUBDIR)).getFileHandle("settings.dat");
     hasSettings = true;
   } catch {
     // No settings file yet.
@@ -587,7 +589,7 @@ async function main() {
     void help.show().catch(fail);
   });
   $("reinstall").addEventListener("click", askInstall);
-  const settingsPanel = new SettingsPanel(prefs, pads);
+  const settingsPanel = new SettingsPanel(prefs);
   $("settings").addEventListener("click", () => void settingsPanel.open().catch(fail));
   attachSaves();
 

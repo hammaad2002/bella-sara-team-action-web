@@ -1,10 +1,9 @@
 /**
- * The controls list: what each key, controller button and mouse input does with the current
- * settings (player 1), plus the browser's own keys. Shown once before the first start, then from
- * the play panel's Controls button or with F1 / the HUD's Controls button in game.
+ * The controls list: what the game's keys and the mouse do, plus the browser's own keys. Shown
+ * once before the first start, then from the play panel's Controls button or with F1 / the HUD's Controls button in game.
  */
 import type { Prefs } from "./prefs.ts";
-import { ACTIONS, defaultSettings, dikLabel, keyLabel, padBindingLabel, prepareSettings, type GameSettings } from "./settings.ts";
+import { keyLabel } from "./settings.ts";
 
 const SEEN = "bella.controlsSeen";
 
@@ -51,9 +50,7 @@ export class Help {
     if (this.isOpen) return;
     this.isOpen = true;
     this.closeHandler = onClose;
-    const settings = await prepareSettings().catch(() => defaultSettings());
-    if (!this.isOpen) return; // closed again while the settings loaded
-    this.render(settings, closeLabel);
+    this.render(closeLabel);
     // In fullscreen only the fullscreen element's subtree is visible.
     (document.fullscreenElement ?? document.body).append(this.el);
     this.el.hidden = false;
@@ -74,26 +71,14 @@ export class Help {
     done?.();
   }
 
-  private render(s: GameSettings, closeLabel: string): void {
+  private render(closeLabel: string): void {
     document.getElementById("help-close")!.textContent = closeLabel;
-    const body = this.el.querySelector("tbody")!;
-    body.replaceChildren(
-      ...ACTIONS.map((a, i) => row(a.name, dikLabel(s.keys[0][i]), padBindingLabel(s.pads[0], i))),
-    );
-    const action = (id: number) => ACTIONS.find((a) => a.id === id)?.name ?? "";
-    const mouse: [string, string][] = [];
-    if (s.mouseEnabled) mouse.push(["Move the mouse", "Turn the camera (click the game first to capture the mouse)"]);
-    ["Left button", "Right button", "Middle button"].forEach((b, i) => {
-      if (s.mouseButtons[i]) mouse.push([b, action(s.mouseButtons[i])]);
-    });
-    if (!mouse.length) mouse.push(["—", "The mouse is not used (see Settings)"]);
-    list("help-mouse", mouse);
     const alias = this.prefs.pauseAlias;
     const other: [string, string][] = [
       ["F1", "Show or hide this controls list (the game pauses meanwhile)"],
-      ["Arrow keys / WASD", "Move your horse (game default: arrows; Manual preset in Settings uses W A S D)"],
+      ["Arrow keys / WASD", "Move your horse"],
       ["Space", "Jump and interact in the world; confirm choices in menus"],
-      ["Mouse", "Menus and the stable; click the game to use the mouse for the camera when enabled in Settings"],
+      ["Mouse", "Menus, the stable and the paddock; click the game first to capture the mouse"],
       ["Esc", "Pause and open the in-game menu"],
       ["Arrow keys, Enter, Esc", "Navigate menus when a list or dialog is open"],
     ];
@@ -101,16 +86,6 @@ export class Help {
     other.push(["Fullscreen", "Button at the top right of the game (move the mouse to show it); in Chrome and Edge hold Esc to leave"]);
     list("help-other", other);
   }
-}
-
-function row(...cells: string[]): HTMLTableRowElement {
-  const tr = document.createElement("tr");
-  for (const c of cells) {
-    const td = document.createElement("td");
-    td.textContent = c;
-    tr.append(td);
-  }
-  return tr;
 }
 
 function list(id: string, items: [string, string][]): void {

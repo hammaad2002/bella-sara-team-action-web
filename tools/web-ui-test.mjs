@@ -3,14 +3,14 @@
 //   saves   — back up, delete, restore (ZIP from the page, a deflated ZIP with folders, single
 //             files), overwrite confirmation, rejection of other files
 //   view    — game view HUD, cursor hidden by the game, fullscreen, pointer lock, pause-key alias
-//   help    — settings written by the first page version migrate to the game's keys; the controls
-//             list before the first start, and with F1 / the HUD button in game (game paused)
+//   help    — the controls list before the first start, and with F1 / the HUD button in game
+//             (game paused)
 //   node tools/web-ui-test.mjs [--port 5174] [--only saves|view|help] [--browser chrome|firefox|webkit] [--headed]
 // Needs the dev server (cd web && npx vite --port 5174) and an installed game in that port's
 // profile (run tools/web-smoke.mjs with devIso first). Saves must exist for the saves part.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { browserArgs, launch } from "./browsers.mjs";
 
@@ -31,6 +31,7 @@ const check = (ok, what, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"} ${what}${detail ? ` — ${detail}` : ""}`);
   if (!ok) failures++;
 };
+const byName = (o, n) => o[Object.keys(o).find((k) => k.toLowerCase() === n.toLowerCase())] ?? [];
 const sha = (b) => createHash("sha256").update(b).digest("hex").slice(0, 16);
 
 const ctx = await launch({ ...browserArgs(args), port, extra: { acceptDownloads: true } });
@@ -42,15 +43,15 @@ const opfsSaves = () =>
   page.evaluate(async () => {
     const out = {};
     try {
-      const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle("bella")).getDirectoryHandle("Save");
-      for await (const [name, h] of dir.entries()) if (h.kind === "file") out[name] = [...new Uint8Array(await (await h.getFile()).arrayBuffer())];
+      const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle("bella")).getDirectoryHandle("Bella Sara");
+      for await (const [name, h] of dir.entries()) if (h.kind === "file" && /^eqsave\.dat$/i.test(name)) out[name] = [...new Uint8Array(await (await h.getFile()).arrayBuffer())];
     } catch {}
     return out;
   });
 const deleteSaves = () =>
   page.evaluate(async () => {
-    const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle("bella")).getDirectoryHandle("Save");
-    for await (const name of dir.keys()) await dir.removeEntry(name);
+    const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle("bella")).getDirectoryHandle("Bella Sara");
+    for await (const name of dir.keys()) if (/^eqsave\.dat$/i.test(name)) await dir.removeEntry(name);
   });
 const statusText = () => page.locator("#save-status").innerText();
 const waitStatus = (re) => page.waitForFunction((src) => new RegExp(src).test(document.getElementById("save-status").textContent), re.source, { timeout: 15_000 });
@@ -58,8 +59,24 @@ const waitStatus = (re) => page.waitForFunction((src) => new RegExp(src).test(do
 if (!only || only === "saves") {
   await page.goto(base);
   await waitState("ready");
-  const before = await opfsSaves();
-  const names = Object.keys(before).sort();
+  let before = await opfsSaves();
+  let names = Object.keys(before).sort();
+  if (!names.length) {
+    const sample = "work/install/Bella Sara/EQSAVE.DAT";
+    if (existsSync(sample)) {
+      const bytes = [...readFileSync(sample)];
+      await page.evaluate(async (data) => {
+        const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle("bella")).getDirectoryHandle("Bella Sara", { create: true });
+        const w = await (await dir.getFileHandle("EQSAVE.DAT", { create: true })).createWritable();
+        await w.write(new Uint8Array(data));
+        await w.close();
+      }, bytes);
+      await page.reload();
+      await waitState("ready");
+      before = await opfsSaves();
+      names = Object.keys(before).sort();
+    }
+  }
   console.log(`saves in OPFS: ${names.map((n) => `${n} (${before[n].length} B, ${sha(Buffer.from(before[n]))})`).join(", ") || "none"}`);
   if (!names.length) {
     check(false, "saves exist to back up", "play until the game saves (e.g. web-smoke.mjs with resetSave and the new-game key script)");
@@ -76,21 +93,30 @@ if (!only || only === "saves") {
       execFileSync("python3", ["-I", "-c", "import sys,zipfile,json,hashlib;z=zipfile.ZipFile(sys.argv[1]);print(json.dumps({i.filename:hashlib.sha256(z.read(i)).hexdigest()[:16] for i in z.infolist()}))", zipPath]).toString(),
     );
     check(
-      names.every((n) => listing[`Save/${n}`] === sha(Buffer.from(before[n]))) && Object.keys(listing).length === names.length,
-      "backup ZIP holds every save byte-for-byte",
+      names.every((n) => listing[`Save/${n.toLowerCase()}`] === sha(Buffer.from(before[n]))) && Object.keys(listing).filter((k) => k.startsWith("Save/")).length === names.length && "settings.dat" in listing,
+      "backup ZIP holds every save (and settings.dat) byte-for-byte",
       JSON.stringify(listing),
     );
+
+    // Restoring over saves that exist (confirmed) must replace them, not add a second file in another case.
+    await page.setInputFiles("#save-import", zipPath);
+    await page.locator("#save-confirm").waitFor({ state: "visible" });
+    await page.click("#save-confirm-yes");
+    await waitStatus(/Restored/);
+    check(Object.keys(await opfsSaves()).sort().join() === names.join(), "restore over existing saves keeps their file names", Object.keys(await opfsSaves()).join());
 
     // Lose the saves, then restore them from the backup.
     await deleteSaves();
     await page.reload();
     await waitState("ready");
     await waitStatus(/No saved games/);
-    check(await page.locator("#save-export").isDisabled(), "backup disabled with no saves");
+    check(!(await page.locator("#save-export").isDisabled()), "backup still offered for settings.dat with no saves");
     await page.setInputFiles("#save-import", zipPath);
+    await page.locator("#save-confirm").waitFor({ state: "visible" }); // the ZIP's settings.dat replaces the existing one
+    await page.click("#save-confirm-yes");
     await waitStatus(/Restored/);
     const restored = await opfsSaves();
-    check(names.every((n) => sha(Buffer.from(restored[n] ?? [])) === sha(Buffer.from(before[n]))), "restore writes the original bytes", await statusText());
+    check(names.every((n) => sha(Buffer.from(byName(restored, n))) === sha(Buffer.from(before[n]))), "restore writes the original bytes", await statusText());
     check(!(await page.locator("#save-export").isDisabled()), "backup enabled again");
 
     // Restoring over existing saves asks first; Cancel changes nothing.
@@ -110,14 +136,14 @@ if (!only || only === "saves") {
     await page.setInputFiles("#save-import", nested);
     await waitStatus(/Restored/);
     const fromNested = await opfsSaves();
-    check(names.every((n) => sha(Buffer.from(fromNested[n] ?? [])) === sha(Buffer.from(before[n]))), "deflated ZIP with folders restores", await statusText());
+    check(names.every((n) => sha(Buffer.from(byName(fromNested, n))) === sha(Buffer.from(before[n]))), "deflated ZIP with folders restores", await statusText());
 
     // Individual save files from a Windows install, replacing the existing slot after confirmation.
     await page.setInputFiles("#save-import", join(savesDir, names[0]));
     await page.locator("#save-confirm").waitFor({ state: "visible" });
     await page.click("#save-confirm-yes");
     await waitStatus(/Restored/);
-    check((await statusText()) === `Restored ${names[0]}.`, "single save file restores after confirmation", await statusText());
+    check((await statusText()) === `Restored ${names[0].toLowerCase()}.`, "single save file restores after confirmation", await statusText());
 
     // Anything else is refused without touching the saves.
     const bogus = join(tmp, "notes.txt");
@@ -131,7 +157,7 @@ if (!only || only === "saves") {
     await waitStatus(/unexpected size/);
     check(true, "empty save file is refused", await statusText());
     const after = await opfsSaves();
-    check(names.every((n) => sha(Buffer.from(after[n] ?? [])) === sha(Buffer.from(before[n]))), "saves intact after refused imports");
+    check(names.every((n) => sha(Buffer.from(byName(after, n))) === sha(Buffer.from(before[n]))), "saves intact after refused imports");
   }
 }
 
@@ -175,12 +201,14 @@ if (!only || only === "view") {
     const after = await page.evaluate((n) => window.__bella.log.slice(n).filter((l) => /input: event [45] /.test(l)), logLen);
     check(after.length === 2, "clicks while locked reach the game", after.join(" | "));
     await page.evaluate(() => document.exitPointerLock());
+    await page.waitForFunction(() => !document.pointerLockElement, null, { timeout: 5_000 }).catch(() => {});
+    await page.waitForTimeout(300);
   }
 
   // The pause-key alias arrives as Escape (VK 0x1b, DIK 0x01) and produces no character.
   const n0 = await page.evaluate(() => window.__bella.log.length);
   await page.keyboard.press("Backquote");
-  await page.waitForTimeout(500);
+  await page.waitForFunction((n) => window.__bella.log.slice(n).some((l) => /input: event 1 vk=0x1b scan=0x1/.test(l)), n0, { timeout: 10_000 }).catch(() => {});
   const keyLog = await page.evaluate((n) => window.__bella.log.slice(n).filter((l) => l.includes("input:")), n0);
   check(
     keyLog.some((l) => /event 0 vk=0x1b scan=0x1 /.test(l)) && keyLog.some((l) => /event 1 vk=0x1b scan=0x1 /.test(l)) && !keyLog.some((l) => /event 2 /.test(l)),
@@ -199,33 +227,14 @@ if (!only || only === "view") {
 if (!only || only === "help") {
   await page.goto(base);
   await waitState("ready");
-  // Settings as the first version of the page wrote them: the Launcher's keys and mouse buttons.
-  await page.evaluate(async () => {
-    const key = "hkcu\\software\\bella sara\\settings";
-    const manual = [0x11, 0x1f, 0x1e, 0x20, 0xc8, 0xd0, 0xcb, 0xcd, 0x39, 0x21, 0x1c, 0x2a, 0x01, 0x4f, 0x50, 0x0f];
-    let text = `${key}\tresolution\tdword\t2\n${key}\tmousebindl\tdword\t6\n${key}\tmousebindr\tdword\t4\n${key}\tmousebindm\tdword\t5\n`;
-    manual.forEach((k, a) => (text += `${key}\tk0_${a}\tdword\t${k}\n`));
-    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("bella");
-    const w = await (await dir.getFileHandle("registry.txt", { create: true })).createWritable();
-    await w.write(text);
-    await w.close();
-    localStorage.removeItem("bella.controlsSeen");
-  });
+  await page.evaluate(() => localStorage.removeItem("bella.controlsSeen"));
   await page.goto(`${base}?env=BELLA_TRACE=input`);
   await waitState("ready");
   await page.click("#play");
   await page.locator("#help").waitFor({ state: "visible" });
-  const rows = await page.locator("#help tbody tr").evaluateAll((trs) => trs.map((tr) => [...tr.children].map((td) => td.textContent).join(" | ")));
-  const want = ["Move Up | ↑ | Left stick ↕", "Zoom In | Num 8 | Right stick ↕", "Cam Left | Num 4 | Right stick ↔", "Jump | Space | A", "Use | Z | B", "Attack | X | X", "Special | C | Y", "Start (pause) | Esc | Start", "Next Character | A | RB", "Previous Character | S | LB", "Display HUD | D | Back"];
-  for (const w of want) check(rows.includes(w), `controls list: ${w}`);
+  const rows = await page.locator("#help-other li").allInnerTexts();
+  check(rows.length > 0 && rows.some((r) => /Space/.test(r)), "controls list shows the game's keys", rows.join(" / "));
   check((await page.locator("#help-close").innerText()) === "Play", "first start shows the controls with a Play button");
-  const mouse = await page.locator("#help-mouse").innerText();
-  check(/Wheel/.test(mouse) && !/Left button/.test(mouse), "mouse buttons unbound after migration", mouse.replace(/\n/g, " | "));
-  const reg = await page.evaluate(async () => {
-    const f = await (await (await (await navigator.storage.getDirectory()).getDirectoryHandle("bella")).getFileHandle("registry.txt")).getFile();
-    return Object.fromEntries((await f.text()).split("\n").filter(Boolean).map((l) => l.split("\t")).map((p) => [p[1], p[3]]));
-  });
-  check(reg.k0_0 === String(0xc8) && reg.k0_9 === String(0x2c) && reg.mousebindl === "0" && reg.webdefaults === "2", "old page defaults migrated", `k0_0=${reg.k0_0} k0_9=${reg.k0_9} mousebindl=${reg.mousebindl}`);
   await page.click("#help-close");
   await waitState("running", 120_000);
   await page.waitForFunction(() => window.__bella.frames > 60, null, { timeout: 120_000 });
@@ -242,6 +251,18 @@ if (!only || only === "help") {
   check(!events.some((l) => /vk=0x58/.test(l)), "keys do not reach the game while the list is open");
   // Every close must resume the game (the first version only resumed after the first close).
   const resumes = [];
+  // The game stalls for a second or two while it loads its scenes after the first frames; wait for it to settle.
+  await page.waitForFunction(
+    () => {
+      const w = window, now = performance.now(), f = w.__bella.frames;
+      const last = (w.__settle ??= { t: now, f });
+      if (now - last.t < 1000) return false;
+      w.__settle = { t: now, f };
+      return f - last.f >= 20;
+    },
+    null,
+    { timeout: 120_000, polling: 250 },
+  );
   for (const [how, ms] of [["F1", 300], ["button", 800], ["F1", 50], ["Escape", 1200]]) {
     if (how === "button") {
       await page.mouse.move(600, 300);

@@ -59,7 +59,10 @@ function devFiles(): Plugin {
           const buildWeb = process.env.BELLA_BUILD_WEB ?? join(root, "work/build-web-W");
           file = join(buildWeb, url.slice("/dev-engine/".length));
         }
-        else if (url === "/dev-iso") file = process.env.BELLA_ISO ?? join(root, "Bella Sara.iso");
+        else if (url === "/dev-iso") {
+          const iso = join(root, "Bella Sara.iso");
+          file = process.env.BELLA_ISO ?? (existsSync(iso) ? iso : join(root, "Bella_Sara.iso"));
+        }
         if (!file || !existsSync(file) || !statSync(file).isFile()) return next();
         res.setHeader("Content-Type", types[extname(file)] ?? "application/octet-stream");
         res.setHeader("Content-Length", String(statSync(file).size));
@@ -75,7 +78,13 @@ function devFiles(): Plugin {
 export default defineConfig({
   root: import.meta.dirname,
   plugins: [icedEsm(), devFiles()],
-  server: { headers: isolation, port: 5173, strictPort: true, fs: { allow: [root] } },
+  server: {
+    headers: isolation,
+    port: 5173,
+    strictPort: true,
+    fs: { allow: [root] },
+    watch: { ignored: ["**/node_modules/**", "**/work/**", "**/runtime/**", "**/recomp/**"] },
+  },
   preview: { headers: isolation },
   // Worker bundles do not inherit `plugins`: the translator worker needs the iced-x86 shim too.
   worker: { format: "es", plugins: () => [icedEsm()] },

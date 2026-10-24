@@ -1,6 +1,6 @@
 /**
  * Keyboard and mouse input for the engine: DOM events → Windows virtual keys / DirectInput scan
- * codes (keys.ts) and window-relative mouse messages, with pointer lock for the mouse camera.
+ * codes (keys.ts) and window-relative mouse messages, with pointer lock for the game's own cursor.
  */
 import { KEYS } from "./keys.ts";
 
@@ -10,12 +10,14 @@ export interface InputEngine {
   _web_mouse_button(button: number, down: number, x: number, y: number): void;
   _web_mouse_wheel(dy: number): void;
   _web_focus(focused: number): void;
+  /** The game's client area as width << 16 | height (its chosen resolution). */
+  _web_client_size(): number;
 }
 
 export interface InputOptions {
   /** KeyboardEvent.code that also acts as Escape (browsers reserve Esc in fullscreen/pointer lock). */
   pauseAlias: string;
-  /** Lock the pointer on click so mouse movement turns the camera (the game's "mouse camera"). */
+  /** Lock the pointer on click: the game hides the system cursor and moves its own from raw DirectInput motion. */
   mouseCapture: boolean;
   /** F1: show or hide the controls list. */
   onHelp?: () => void;
@@ -29,6 +31,8 @@ export class Input {
   private readonly swallowed = new Set<number>();
   /** While suspended (an overlay is open) the game gets no input and is told it lost focus. */
   private suspended = false;
+  /** Last pointer position in client space; integrated from motion while the pointer is locked. */
+  private locked: [number, number] = [400, 300];
 
   constructor(engine: InputEngine, canvas: HTMLCanvasElement, options: InputOptions) {
     this.engine = engine;
@@ -89,10 +93,22 @@ export class Input {
     if (down && e.key.length === 1 && code === e.code) this.engine._web_key(2, 0, 0, e.key.charCodeAt(0));
   }
 
-  /** Window-relative coordinates in the game's 800x600 client space. */
+  /** Window-relative coordinates in the game's client space (its resolution), inside the letterbox. */
   private pos(e: MouseEvent): [number, number] {
+    const packed = this.engine._web_client_size();
+    const cw = packed >> 16 || 800, ch = packed & 0xffff || 600;
     const r = this.canvas.getBoundingClientRect();
-    return [Math.round(((e.clientX - r.left) / r.width) * 800), Math.round(((e.clientY - r.top) / r.height) * 600)];
+    const iw = Math.min(r.width, (r.height * cw) / ch), ih = Math.min(r.height, (r.width * ch) / cw);
+    const ix = r.left + (r.width - iw) / 2, iy = r.top + (r.height - ih) / 2;
+    // Under pointer lock clientX/Y stay frozen: integrate the motion, clamped to the window, so
+    // the game's re-capture after its cursor leaves an edge lands where the motion went.
+    if (this.pointerLocked) {
+      this.locked[0] = Math.min(cw - 1, Math.max(0, this.locked[0] + (e.movementX / iw) * cw));
+      this.locked[1] = Math.min(ch - 1, Math.max(0, this.locked[1] + (e.movementY / ih) * ch));
+    } else {
+      this.locked = [((e.clientX - ix) / iw) * cw, ((e.clientY - iy) / ih) * ch];
+    }
+    return [Math.round(this.locked[0]), Math.round(this.locked[1])];
   }
 
   get pointerLocked(): boolean {
