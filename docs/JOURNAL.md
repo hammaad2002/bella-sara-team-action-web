@@ -272,3 +272,10 @@ Plan and milestone exit criteria: `docs/PLAN.md`.
   forever (the `effects.ffs` header loop range spans each whole sample; only mode bits decide looping) and
   `SetPan(-1)` (FSOUND_STEREOPAN) was clamped to hard left. Hidden/dump runs pull the mixer from a real-time
   timer thread; the WAV dump no longer overwrites itself (seek to end after patching the header).
+- **Still too quiet / laggy cursor / 30 fps.** The game mixes quietly by design (music setting 0.5 × 0.5 = FMOD 64,
+  effects 0.7 = 179; RE of 0x5369da / f_00536D90), so the page boosts ×3 into a limiter. The game's main loop
+  (0x44f920) is a fixed-step accumulator with step/frame globals 0x738BA0/0x738BA4 set to 1/30 at 0x474963; updates
+  scale by the step, so Present rewrites them to 1/60 (`BELLA_FPS=30` keeps the original): 60 fps, riding speed
+  matches 30 fps frame-for-frame in wall time (the `-greenscreen` debug menu's key repeat is tick-based and runs
+  faster). The web pointer lock keeps OS acceleration (no `unadjustedMovement`) and scales motion to game pixels
+  per CSS pixel, so the game cursor travels like the system cursor at any resolution or zoom.

@@ -33,6 +33,9 @@ export class Input {
   private suspended = false;
   /** Last pointer position in client space; integrated from motion while the pointer is locked. */
   private locked: [number, number] = [400, 300];
+  /** Game pixels per CSS pixel (x, y), and the motion's unsent fractions. */
+  private scale: [number, number] = [1, 1];
+  private frac: [number, number] = [0, 0];
 
   constructor(engine: InputEngine, canvas: HTMLCanvasElement, options: InputOptions) {
     this.engine = engine;
@@ -42,7 +45,12 @@ export class Input {
     window.addEventListener("keyup", (e) => this.key(e, false));
     canvas.addEventListener("mousemove", (e) => {
       const [x, y] = this.pos(e);
-      engine._web_mouse_move(x, y, e.movementX, e.movementY);
+      // The game moves its cursor one game pixel per count: scale the (OS-accelerated) motion so
+      // it travels as far on screen as the system cursor would, at any resolution or zoom.
+      const fx = this.frac[0] + e.movementX * this.scale[0], fy = this.frac[1] + e.movementY * this.scale[1];
+      const dx = Math.trunc(fx), dy = Math.trunc(fy);
+      this.frac = [fx - dx, fy - dy];
+      engine._web_mouse_move(x, y, dx, dy);
     });
     canvas.addEventListener("mousedown", (e) => {
       if (this.suspended) return;
@@ -100,6 +108,7 @@ export class Input {
     const r = this.canvas.getBoundingClientRect();
     const iw = Math.min(r.width, (r.height * cw) / ch), ih = Math.min(r.height, (r.width * ch) / cw);
     const ix = r.left + (r.width - iw) / 2, iy = r.top + (r.height - ih) / 2;
+    this.scale = [cw / iw, ch / ih];
     // Under pointer lock clientX/Y stay frozen: integrate the motion, clamped to the window, so
     // the game's re-capture after its cursor leaves an edge lands where the motion went.
     if (this.pointerLocked) {
@@ -117,11 +126,11 @@ export class Input {
 
   lockPointer(): void {
     try {
-      // unadjustedMovement gives raw deltas where supported; fall back to a plain request.
-      const p = (this.canvas.requestPointerLock as (o?: object) => Promise<void> | void).call(this.canvas, { unadjustedMovement: true });
-      if (p && typeof (p as Promise<void>).catch === "function") (p as Promise<void>).catch(() => this.canvas.requestPointerLock());
+      // Keep the system's pointer acceleration (no unadjustedMovement): the cursor feels like the desktop's.
+      const p = this.canvas.requestPointerLock() as Promise<void> | void;
+      if (p && typeof p.catch === "function") p.catch(() => {});
     } catch {
-      this.canvas.requestPointerLock();
+      // Not supported: the unlocked pointer still drives the game.
     }
   }
 }

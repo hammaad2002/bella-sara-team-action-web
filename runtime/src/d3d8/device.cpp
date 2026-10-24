@@ -1436,8 +1436,23 @@ uint32_t Reset(Cpu* c, ComObject* self) {
   return S_OK;
 }
 
+// Bella Sara steps its logic at a fixed 1/30 s (globals set at start-up, 0x474963) and renders once
+// per step. Its updates scale by that step, so 1/60 gives 60 fps at the same game speed (riding
+// verified); the step is re-applied each frame in case the game sets it again. BELLA_FPS=30 keeps
+// the original rate.
+void game_frame_rate() {
+  static const bool on = [] {
+    const char* e = getenv("BELLA_FPS");
+    return !e || strcmp(e, "30") != 0;
+  }();
+  if (!on) return;
+  for (uint32_t a : {0x738ba0u, 0x738ba4u})  // update step, frame time
+    if (ld32(a) == 0x3d088889u) st32(a, 0x3c888889u);  // 1/30 -> 1/60
+}
+
 uint32_t Present(Cpu* c, ComObject* self) {
   rt::user32_pump();
+  game_frame_rate();
   Device8* d = D(self);
   if (d->lost) {
     flush_stream(false);
